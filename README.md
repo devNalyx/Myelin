@@ -21,7 +21,7 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 - Config/TOML, systemd user unit, CLI, `.deb` packaging conventions
 - Export/import as a portable snapshot
 - The OpenAI-compatible embeddings client shape — promoted from optional to load-bearing here, since there's no AST equivalent for behavior
-- The warm/cold gating pattern (judge staleness by last-used, not last-modified) — reused conceptually for skill atrophy
+- The warm/cold gating pattern (judge staleness by last-used, not last-modified) — implemented for skill atrophy as an informational flag; NexusContext also *acts* on it (stops watching cold projects), which this doesn't do yet
 - The scoped-neighborhood + Graphviz visualization pattern (never render the whole graph, only a bounded slice) — reused for browsing the learned graph
 
 ## 3. What's new, not reused
@@ -42,11 +42,11 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 - `skill_candidates` — title, token-overlap `key`, `rep_count`, `status` (`warming`/`promoted`)
 - `skills` — slug, path to the written `SKILL.md`, `promoted_reason` (`reps`/`context_signal`/`manual`), observation count, provenance timestamp
 - `corrections` — skill_id, `kind` (`correction`/`confirmation`), note, timestamp; corrections also get appended live into the skill's actual `SKILL.md`
+- `skills.last_invoked_at` — set by `mark_skill_used`; `list_skills` derives a `stale` flag from it (falling back to `created_at` if a skill's never been marked used)
 
 **Sketch, not yet implemented:**
 - `Session` node (a source transcript) — there's no transcript ingestion yet, so observations are reported directly by the calling agent instead of mined from a `Session`
 - `SUPERSEDES` edges — no skill versioning yet, a correction appends to the file rather than creating a new version
-- Any notion of skill staleness/atrophy — nothing tracks whether a promoted skill is actually still being invoked
 
 ## 5. Pipeline
 
@@ -56,12 +56,13 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
+6. `mark_skill_used` (or `myelin mark-used`) records that a skill was actually invoked, independent of feedback. `list_skills` flags a skill `stale` once `[atrophy] stale_after_secs` (default 30 days) has passed since its last use (or since promotion, if it's never been used) — informational only, nothing deletes or unregisters a stale skill automatically.
 
 **Still sketch, not yet implemented:**
 - Automatic transcript ingestion (watching `*.jsonl` session files instead of relying on an explicit tool call)
 - A redaction pass (moot right now since nothing auto-ingests raw transcripts, but a hard blocker before that changes)
 - Embeddings-based similarity (upgrade path once token-overlap proves too blunt)
-- Atrophy (flagging skills nobody's invoked in a while) and the scoped-neighborhood graph visualizer
+- The scoped-neighborhood graph visualizer, and any actual action taken on stale skills beyond the flag
 
 ## 6. Interop note: Open Knowledge Format (OKF)
 
@@ -82,8 +83,8 @@ Not adopted yet — noted here as the likely export/interop format once there's 
 crates/
   myelin-core/   # shared lib: Config, Paths, Error
   myelin-index/  # SQLite store, similarity matching, promotion, SKILL.md drafting
-  myelind/       # daemon: `mcp` (stdio JSON-RPC, 5 tools) and `serve` (control socket) subcommands
-  myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback`
+  myelind/       # daemon: `mcp` (stdio JSON-RPC, 6 tools) and `serve` (control socket) subcommands
+  myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback|mark-used`
 packaging/systemd/myelin.service
 ```
 
@@ -105,6 +106,7 @@ Or directly via the CLI, against the same SQLite store:
 ./target/debug/myelin skills    # promoted skills, with provenance
 ./target/debug/myelin promote <candidate_id>   # force-promote early
 ./target/debug/myelin feedback <skill_id> --kind correction --note "..."  # mutates the live SKILL.md
+./target/debug/myelin mark-used <skill_id>   # resets the staleness clock
 ```
 
 Three similarly-worded `observe` calls (or one with `--high-stakes`) will drop a real `SKILL.md` into `~/.claude/skills/<slug>/` — override the location with `MYELIN_SKILLS_DIR` for testing.
@@ -119,8 +121,11 @@ Config lives at `~/.config/myelin/config.toml` (all optional, missing file = def
 [promotion]
 reps = 3                    # observations needed before a candidate auto-promotes
 similarity_threshold = 0.4  # Jaccard token-overlap threshold, 0.0-1.0
+
+[atrophy]
+stale_after_secs = 2592000  # 30 days; flags a skill `stale` in list_skills, doesn't act on it
 ```
 
 ## 10. Tests
 
-`cargo test --workspace` — 11 tests in `myelin-index` cover tokenize/jaccard, both promotion paths (reps and high-stakes), manual promotion + the double-promotion error, and the feedback loop (correction actually mutates the file on disk, confirmation doesn't, invalid kind/unknown skill both error cleanly). No integration tests against the MCP protocol yet — that layer has only been verified manually so far (see commit history).
+`cargo test --workspace` — 14 unit tests in `myelin-index` (tokenize/jaccard, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, and staleness/mark-used) plus 3 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, and that bad input returns JSON-RPC errors rather than crashing).

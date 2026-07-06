@@ -1,4 +1,4 @@
-use myelin_index::{NewObservation, Store};
+use myelin_index::{NewObservation, Store, StoreConfig};
 use serde_json::{json, Value};
 
 fn open_store() -> anyhow::Result<Store> {
@@ -6,8 +6,11 @@ fn open_store() -> anyhow::Result<Store> {
     let config = myelin_core::Config::load(&paths.config_file())?;
     Store::open(
         &paths.db_file(),
-        config.promotion.reps,
-        config.promotion.similarity_threshold,
+        StoreConfig {
+            promotion_reps: config.promotion.reps,
+            similarity_threshold: config.promotion.similarity_threshold,
+            stale_after_secs: config.atrophy.stale_after_secs,
+        },
     )
 }
 
@@ -62,6 +65,15 @@ pub fn tool_definitions() -> Value {
                     "note": { "type": "string", "description": "For a correction: what was wrong and what actually worked. For a confirmation: brief context on what was done." }
                 },
                 "required": ["skill_id", "kind", "note"]
+            }
+        },
+        {
+            "name": "mark_skill_used",
+            "description": "Record that a promoted skill was just followed/invoked, independent of whether you also have feedback to give. This is what list_skills' `stale` flag is judged against - call it whenever you actually use an existing skill, even if it worked perfectly and you have nothing to correct.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "skill_id": { "type": "integer", "description": "From list_skills." } },
+                "required": ["skill_id"]
             }
         }
     ])
@@ -126,6 +138,15 @@ pub fn call(params: Value) -> anyhow::Result<Value> {
             let note = field_str(&args, "note")?;
             let result = store.record_skill_feedback(skill_id, &kind, &note)?;
             Ok(serde_json::to_value(result)?)
+        }
+        "mark_skill_used" => {
+            let store = open_store()?;
+            let skill_id = args
+                .get("skill_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing skill_id"))?;
+            store.mark_skill_used(skill_id)?;
+            Ok(json!({ "marked_used": true }))
         }
         other => anyhow::bail!("unknown tool: {other}"),
     }

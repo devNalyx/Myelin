@@ -90,6 +90,7 @@ fn initialize_and_tools_list_match_the_real_dispatch() {
         "list_skills",
         "promote_skill",
         "record_skill_feedback",
+        "mark_skill_used",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }

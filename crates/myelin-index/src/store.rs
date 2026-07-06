@@ -1,17 +1,36 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Fallback reps threshold when a caller doesn't have a `myelin_core::Config`
-/// to load one from (e.g. tests). Kept here rather than depending on
+/// Fallback tuning when a caller doesn't have a `myelin_core::Config` to
+/// load one from (e.g. tests). Kept here rather than depending on
 /// myelin-core, to keep this crate's dependency graph shallow. Must match
-/// `myelin_core::config::PromotionConfig`'s default.
+/// `myelin_core::config`'s defaults.
 pub const DEFAULT_PROMOTION_REPS: i64 = 3;
-
-/// Fallback similarity threshold — see `DEFAULT_PROMOTION_REPS`.
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.4;
+/// 30 days.
+pub const DEFAULT_STALE_AFTER_SECS: i64 = 30 * 24 * 3600;
+
+pub struct StoreConfig {
+    pub promotion_reps: i64,
+    pub similarity_threshold: f64,
+    /// A skill with no activity (never invoked, or not invoked) for this
+    /// long is flagged `stale` in `list_skills` — informational only, not
+    /// automatically deleted or unregistered.
+    pub stale_after_secs: i64,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            promotion_reps: DEFAULT_PROMOTION_REPS,
+            similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
+            stale_after_secs: DEFAULT_STALE_AFTER_SECS,
+        }
+    }
+}
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS skill_candidates (
@@ -43,7 +62,8 @@ CREATE TABLE IF NOT EXISTS skills (
     path TEXT NOT NULL,
     promoted_reason TEXT NOT NULL,
     observation_count INTEGER NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    last_invoked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS corrections (
@@ -59,6 +79,7 @@ pub struct Store {
     conn: Connection,
     promotion_reps: i64,
     similarity_threshold: f64,
+    stale_after_secs: i64,
 }
 
 pub struct NewObservation {
@@ -99,6 +120,10 @@ pub struct SkillView {
     pub created_at: String,
     pub correction_count: i64,
     pub confirmation_count: i64,
+    pub last_invoked_at: Option<String>,
+    /// No activity (last_invoked_at, or created_at if never invoked) for
+    /// `stale_after_secs` — informational only, nothing acts on this yet.
+    pub stale: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,25 +150,50 @@ fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     intersection / union
 }
 
+/// Seconds elapsed from an RFC3339 timestamp to `now`. Unparseable
+/// timestamps count as "just happened" (0) rather than erroring — this
+/// only feeds an informational `stale` flag, not anything destructive.
+fn seconds_since(now: DateTime<Utc>, ts: &str) -> i64 {
+    DateTime::parse_from_rfc3339(ts)
+        .map(|dt| (now - dt.with_timezone(&Utc)).num_seconds())
+        .unwrap_or(0)
+}
+
+/// No real migrations system yet (see README) - this is the lightweight
+/// stand-in for "add a column to a table that might already exist without
+/// it." Any other error (malformed DDL, wrong type, etc.) still surfaces.
+fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> anyhow::Result<()> {
+    match conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 impl Store {
     /// Opens (creating if needed) the store at `db_path`, with the given
-    /// promotion tuning. Use `DEFAULT_PROMOTION_REPS`/`DEFAULT_SIMILARITY_THRESHOLD`
-    /// if the caller has no config of its own.
-    pub fn open(
-        db_path: &Path,
-        promotion_reps: i64,
-        similarity_threshold: f64,
-    ) -> anyhow::Result<Self> {
+    /// tuning. Use `StoreConfig::default()` if the caller has no
+    /// `myelin_core::Config` of its own (e.g. tests).
+    pub fn open(db_path: &Path, config: StoreConfig) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(db_path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        ensure_column(&conn, "skills", "last_invoked_at", "TEXT")?;
         Ok(Self {
             conn,
-            promotion_reps,
-            similarity_threshold,
+            promotion_reps: config.promotion_reps,
+            similarity_threshold: config.similarity_threshold,
+            stale_after_secs: config.stale_after_secs,
         })
     }
 
@@ -331,12 +381,19 @@ impl Store {
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillView>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.candidate_id, s.slug, s.name, s.path, s.promoted_reason,
-                    s.observation_count, s.created_at,
+                    s.observation_count, s.created_at, s.last_invoked_at,
                     (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'correction'),
                     (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'confirmation')
              FROM skills s ORDER BY s.created_at DESC",
         )?;
+        let now = Utc::now();
         let rows = stmt.query_map([], |row| {
+            let created_at: String = row.get(7)?;
+            let last_invoked_at: Option<String> = row.get(8)?;
+            let reference_ts = last_invoked_at
+                .as_deref()
+                .unwrap_or(&created_at)
+                .to_string();
             Ok(SkillView {
                 id: row.get(0)?,
                 candidate_id: row.get(1)?,
@@ -345,12 +402,30 @@ impl Store {
                 path: row.get(4)?,
                 promoted_reason: row.get(5)?,
                 observation_count: row.get(6)?,
-                created_at: row.get(7)?,
-                correction_count: row.get(8)?,
-                confirmation_count: row.get(9)?,
+                created_at,
+                last_invoked_at,
+                correction_count: row.get(9)?,
+                confirmation_count: row.get(10)?,
+                stale: seconds_since(now, &reference_ts) >= self.stale_after_secs,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Marks a skill as just having been invoked/followed - the signal
+    /// `stale` in `list_skills` is judged against. Call this whenever the
+    /// skill was actually used, regardless of whether it also gets
+    /// feedback via `record_skill_feedback`.
+    pub fn mark_skill_used(&self, skill_id: i64) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let rows = self.conn.execute(
+            "UPDATE skills SET last_invoked_at = ?1 WHERE id = ?2",
+            params![now, skill_id],
+        )?;
+        if rows == 0 {
+            anyhow::bail!("no such skill: {skill_id}");
+        }
+        Ok(())
     }
 
     /// Records feedback on a promoted skill. `kind` is "correction" (the
@@ -424,12 +499,7 @@ mod tests {
 
     fn open_test_store(label: &str) -> (Store, std::path::PathBuf) {
         let (db_path, skills_dir) = scratch_dirs(label);
-        let store = Store::open(
-            &db_path,
-            DEFAULT_PROMOTION_REPS,
-            DEFAULT_SIMILARITY_THRESHOLD,
-        )
-        .unwrap();
+        let store = Store::open(&db_path, StoreConfig::default()).unwrap();
         (store, skills_dir)
     }
 
@@ -631,5 +701,67 @@ mod tests {
             .record_skill_feedback(999_999, "confirmation", "note")
             .unwrap_err();
         assert!(bad_id.to_string().contains("no such skill"));
+    }
+
+    #[test]
+    fn a_freshly_promoted_skill_is_not_stale() {
+        let (db_path, skills_dir) = scratch_dirs("fresh-not-stale");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                stale_after_secs: 3600,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        store.record_observation(input, &skills_dir).unwrap();
+
+        let skills = store.list_skills().unwrap();
+        assert!(!skills[0].stale);
+        assert!(skills[0].last_invoked_at.is_none());
+    }
+
+    #[test]
+    fn a_skill_older_than_the_stale_window_is_flagged_and_marking_used_clears_it() {
+        let (db_path, skills_dir) = scratch_dirs("stale-window");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                stale_after_secs: 60,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        store.record_observation(input, &skills_dir).unwrap();
+        let skill_id = store.list_skills().unwrap()[0].id;
+
+        // Backdate created_at well past the 60s window - direct access to
+        // `conn` works here since this test module is nested inside the
+        // same file as `Store`.
+        let two_hours_ago = (Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        store
+            .conn
+            .execute(
+                "UPDATE skills SET created_at = ?1 WHERE id = ?2",
+                params![two_hours_ago, skill_id],
+            )
+            .unwrap();
+        assert!(store.list_skills().unwrap()[0].stale);
+
+        store.mark_skill_used(skill_id).unwrap();
+        // last_invoked_at is now "just now", well inside the 60s window.
+        assert!(!store.list_skills().unwrap()[0].stale);
+        assert!(store.list_skills().unwrap()[0].last_invoked_at.is_some());
+    }
+
+    #[test]
+    fn mark_skill_used_rejects_unknown_skill() {
+        let (store, _skills_dir) = open_test_store("mark-used-unknown");
+        let err = store.mark_skill_used(999_999).unwrap_err();
+        assert!(err.to_string().contains("no such skill"));
     }
 }

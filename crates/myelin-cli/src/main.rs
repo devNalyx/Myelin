@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use myelin_index::{NewObservation, Store};
+use myelin_index::{NewObservation, Store, StoreConfig};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
@@ -44,6 +44,8 @@ enum Command {
         #[arg(long)]
         note: String,
     },
+    /// Mark a skill as just used (what the `stale` flag is judged against).
+    MarkUsed { skill_id: i64 },
 }
 
 fn main() -> Result<()> {
@@ -64,6 +66,7 @@ fn main() -> Result<()> {
             kind,
             note,
         } => feedback(skill_id, kind, note),
+        Command::MarkUsed { skill_id } => mark_used(skill_id),
     }
 }
 
@@ -72,8 +75,11 @@ fn open_store() -> Result<Store> {
     let config = myelin_core::Config::load(&paths.config_file())?;
     Store::open(
         &paths.db_file(),
-        config.promotion.reps,
-        config.promotion.similarity_threshold,
+        StoreConfig {
+            promotion_reps: config.promotion.reps,
+            similarity_threshold: config.promotion.similarity_threshold,
+            stale_after_secs: config.atrophy.stale_after_secs,
+        },
     )
 }
 
@@ -129,6 +135,13 @@ fn feedback(skill_id: i64, kind: String, note: String) -> Result<()> {
     let store = open_store()?;
     let result = store.record_skill_feedback(skill_id, &kind, &note)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn mark_used(skill_id: i64) -> Result<()> {
+    let store = open_store()?;
+    store.mark_skill_used(skill_id)?;
+    println!("marked used");
     Ok(())
 }
 

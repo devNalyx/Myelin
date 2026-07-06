@@ -8,6 +8,8 @@ use std::path::Path;
 pub struct Config {
     #[serde(default)]
     pub promotion: PromotionConfig,
+    #[serde(default)]
+    pub atrophy: AtrophyConfig,
 }
 
 /// Tunable knobs for the warmup-queue -> skill promotion logic. Defaults
@@ -38,6 +40,27 @@ impl Default for PromotionConfig {
         Self {
             reps: default_reps(),
             similarity_threshold: default_similarity_threshold(),
+        }
+    }
+}
+
+/// A skill nobody's invoked (or used since) in this long is flagged
+/// `stale` by `list_skills` — informational only, nothing acts on it yet.
+/// The default (30 days) is a guess, same caveat as `PromotionConfig`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtrophyConfig {
+    #[serde(default = "default_stale_after_secs")]
+    pub stale_after_secs: i64,
+}
+
+fn default_stale_after_secs() -> i64 {
+    30 * 24 * 3600
+}
+
+impl Default for AtrophyConfig {
+    fn default() -> Self {
+        Self {
+            stale_after_secs: default_stale_after_secs(),
         }
     }
 }
