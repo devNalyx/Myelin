@@ -3,205 +3,649 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Myelin</title>
-<meta name="description" content="Myelin — the layer that turns repeated practice into instinct. A local daemon that notices recurring or high-stakes procedures in your agentic coding sessions and crystallizes them into real, living Claude Code skills.">
+<title>Myelin — Turn repeated practice into instinct</title>
+<meta name="description" content="A local daemon that notices recurring or high-stakes procedures in your agentic coding sessions and crystallizes them into real, living Claude Code skills.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Myelin">
 <style>
   :root {
-    color-scheme: light dark;
-    --bg: #fbfaf8;
-    --fg: #1a1a1a;
-    --muted: #5a5a5a;
-    --accent: #7a4fd1;
-    --line: #e4e0da;
-    --card: #ffffff;
-    --code-bg: #f1efe9;
+    --bg: #0b0d12;
+    --bg-elevated: #12151c;
+    --bg-card: #151923;
+    --border: #232838;
+    --text: #e7e9ee;
+    --text-dim: #9aa2b1;
+    --text-faint: #5f6779;
+    --accent: #7c8cff;
+    --accent-2: #4dd6c4;
+    --accent-glow: rgba(124, 140, 255, 0.25);
+    --warn: #e0a95c;
+    --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14131a;
-      --fg: #ececec;
-      --muted: #a8a6ac;
-      --accent: #b79bff;
-      --line: #2c2a35;
-      --card: #1b1a22;
-      --code-bg: #211f29;
+  :root[data-theme="light"] {
+    --bg: #f6f7fb;
+    --bg-elevated: #ffffff;
+    --bg-card: #ffffff;
+    --border: #e3e6ee;
+    --text: #191c24;
+    --text-dim: #565f72;
+    --text-faint: #8892a3;
+    --accent: #4d5edb;
+    --accent-2: #0f9e8c;
+    --accent-glow: rgba(77, 94, 219, 0.15);
+    --warn: #b5791f;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f7fb;
+      --bg-elevated: #ffffff;
+      --bg-card: #ffffff;
+      --border: #e3e6ee;
+      --text: #191c24;
+      --text-dim: #565f72;
+      --text-faint: #8892a3;
+      --accent: #4d5edb;
+      --accent-2: #0f9e8c;
+      --accent-glow: rgba(77, 94, 219, 0.15);
+      --warn: #b5791f;
     }
   }
+
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
   body {
+    margin: 0;
     background: var(--bg);
-    color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+    font-family: var(--sans);
     line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
-  main {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 4rem 1.5rem 6rem;
+  a { color: inherit; }
+
+  .glow {
+    position: fixed;
+    top: -20%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1200px;
+    height: 800px;
+    background: radial-gradient(circle, var(--accent-glow) 0%, transparent 65%);
+    pointer-events: none;
+    z-index: 0;
   }
+
   header {
-    margin-bottom: 3rem;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(12px);
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    border-bottom: 1px solid var(--border);
   }
-  .wordmark {
-    font-size: 2.4rem;
+  .nav {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     font-weight: 700;
-    letter-spacing: -0.02em;
-    margin: 0 0 0.5rem;
+    font-size: 16px;
+    text-decoration: none;
+    letter-spacing: -0.01em;
   }
-  .wordmark span {
-    color: var(--accent);
-  }
-  .tagline {
-    font-size: 1.15rem;
-    color: var(--muted);
-    margin: 0 0 1.5rem;
+  .brand img { width: 20px; height: 20px; border-radius: 5px; }
+  .nav-links { display: flex; gap: 26px; font-size: 14px; }
+  .nav-links a { text-decoration: none; color: var(--text-dim); transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+
+  main { position: relative; z-index: 1; }
+
+  .hero {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 96px 24px 64px;
+    text-align: center;
   }
   .badge {
-    display: inline-block;
-    font-size: 0.78rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 0.3rem 0.7rem;
-    border-radius: 999px;
-    border: 1px solid var(--accent);
-    color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    font-family: var(--mono);
+    color: var(--accent-2);
+    background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-2) 30%, transparent);
+    padding: 5px 12px;
+    border-radius: 100px;
+    margin-bottom: 28px;
   }
-  h2 {
-    font-size: 1.05rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    margin: 3rem 0 1rem;
+  h1 {
+    font-size: clamp(2.4rem, 5.5vw, 3.8rem);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    margin: 0 0 20px;
+    font-weight: 700;
   }
-  p { margin: 0 0 1rem; }
+  h1 .grad {
+    background: linear-gradient(120deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
   .lede {
-    font-size: 1.1rem;
+    font-size: clamp(1.05rem, 2vw, 1.25rem);
+    color: var(--text-dim);
+    max-width: 640px;
+    margin: 0 auto 40px;
   }
-  ol, ul {
-    padding-left: 1.3rem;
-  }
-  li {
-    margin-bottom: 0.6rem;
-  }
-  code {
-    background: var(--code-bg);
-    border-radius: 4px;
-    padding: 0.15em 0.4em;
-    font-size: 0.9em;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  a {
-    color: var(--accent);
-    text-decoration: none;
-    border-bottom: 1px solid transparent;
-  }
-  a:hover {
-    border-bottom-color: currentColor;
-  }
-  .cards {
-    display: grid;
-    gap: 1rem;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    margin: 1.5rem 0;
-  }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 1.1rem 1.2rem;
-  }
-  .card h3 {
-    margin: 0 0 0.4rem;
-    font-size: 0.95rem;
-  }
-  .card p {
-    margin: 0;
-    font-size: 0.9rem;
-    color: var(--muted);
-  }
-  .cta {
-    display: flex;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin-top: 1rem;
-  }
+  .lede code { font-family: var(--mono); color: var(--text); }
+
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
   .btn {
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 0.6rem 1rem;
-    font-size: 0.92rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-size: 14.5px;
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: transform .15s, box-shadow .15s, background .15s;
+  }
+  .btn-primary {
+    background: linear-gradient(120deg, var(--accent), var(--accent-2));
+    color: #0b0d12;
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px var(--accent-glow); }
+  .btn-ghost {
+    background: var(--bg-card);
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .btn-ghost:hover { border-color: var(--accent); }
+
+  .stat-row {
+    display: flex;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: wrap;
+    margin-top: 56px;
+    border-top: 1px solid var(--border);
+    padding-top: 32px;
+  }
+  .stat {
+    padding: 0 28px;
+    text-align: center;
+    border-right: 1px solid var(--border);
+  }
+  .stat:last-child { border-right: none; }
+  .stat .n {
+    font-family: var(--mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.02em;
+  }
+  .stat .l {
+    font-size: 12px;
+    color: var(--text-faint);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+
+  section { max-width: 1080px; margin: 0 auto; padding: 48px 24px; }
+  .section-head { text-align: center; margin-bottom: 44px; }
+  .section-head .kicker {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    margin-bottom: 10px;
+  }
+  .section-head h2 {
+    font-size: clamp(1.6rem, 3vw, 2.1rem);
+    letter-spacing: -0.02em;
+    margin: 0;
+  }
+  .section-head p { color: var(--text-dim); max-width: 580px; margin: 12px auto 0; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .grid.steps { grid-template-columns: repeat(4, 1fr); }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 26px;
+    transition: border-color .15s, transform .15s;
+  }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-2px); }
+  .card .icon {
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    margin-bottom: 16px;
+    font-size: 17px;
+  }
+  .card h3 { font-size: 15.5px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .card p { font-size: 13.5px; color: var(--text-dim); margin: 0; }
+
+  .tool-groups {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+  }
+  .tool-group {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px 24px;
+  }
+  .tool-group .group-label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 14px;
+  }
+  .tool-row { padding: 10px 0; border-top: 1px solid var(--border); }
+  .tool-row:first-of-type { border-top: none; }
+  .tool-row .name {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
     font-weight: 600;
   }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #14131a;
+  .tool-row .desc {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin-top: 3px;
   }
+  .tool-row .tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    border-radius: 5px;
+    padding: 1px 6px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+
+  .diagram {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 24px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    overflow-x: auto;
+  }
+  .diagram pre { margin: 0; white-space: pre; }
+  .diagram .hl { color: var(--accent); }
+  .diagram .hl2 { color: var(--accent-2); }
+
+  .specs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin-top: 18px;
+  }
+  .spec {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    background: var(--bg-card);
+  }
+  .spec .k { font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em; }
+  .spec .v { font-family: var(--mono); font-size: 13.5px; color: var(--text); margin-top: 6px; }
+
+  .code-block {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .code-block .code-head {
+    display: flex;
+    gap: 6px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .code-block .code-head span {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--border);
+  }
+  .code-block pre {
+    margin: 0;
+    padding: 18px 20px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-x: auto;
+    color: var(--text);
+  }
+  .code-block .cmt { color: var(--text-faint); }
+
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+  }
+  .status-list { list-style: none; margin: 0; padding: 0; }
+  .status-list li {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 9px 0;
+    border-top: 1px solid var(--border);
+    font-size: 13.5px;
+    color: var(--text-dim);
+  }
+  .status-list li:first-child { border-top: none; }
+  .status-list .mark { font-family: var(--mono); flex-shrink: 0; width: 18px; }
+  .status-list.done .mark { color: var(--accent-2); }
+  .status-list.pending .mark { color: var(--warn); }
+
   footer {
-    margin-top: 4rem;
-    padding-top: 1.5rem;
-    border-top: 1px solid var(--line);
-    font-size: 0.85rem;
-    color: var(--muted);
+    border-top: 1px solid var(--border);
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13px;
   }
-  .status-line {
-    font-size: 0.9rem;
-    color: var(--muted);
+  footer a { color: var(--text-dim); text-decoration: none; }
+  footer a:hover { color: var(--text); }
+  .footer-links { display: flex; gap: 20px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 1000px) {
+    .grid, .grid.steps, .tool-groups, .status-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .nav-links { display: none; }
+    .stat-row { padding-top: 24px; }
+    .stat { border-right: none; padding: 8px 20px; }
+    .grid, .grid.steps, .tool-groups, .status-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <p class="badge">MVP &middot; actively evolving</p>
-    <h1 class="wordmark">Myel<span>i</span>n</h1>
-    <p class="tagline">Mine Your Everyday Learned Instincts, Naturally.</p>
-    <p class="lede">The layer that turns repeated practice into instinct — the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.</p>
-    <div class="cta">
-      <a class="btn primary" href="https://github.com/devNalyx/Myelin">View on GitHub</a>
-      <a class="btn" href="https://github.com/devNalyx/Myelin#readme">Read the design doc</a>
-    </div>
-  </header>
 
-  <section>
-    <h2>What it is</h2>
-    <p>A local daemon that watches your agentic coding sessions, notices recurring or high-stakes procedures, and — once a pattern earns it — crystallizes it into a real <a href="https://code.claude.com/docs/en/skills">Claude Code Skill</a> that keeps mutating from how it's actually used afterward.</p>
-    <p>It isn't "index my codebase" — that's <a href="https://github.com/devNalyx/NexusContext">NexusContext</a>, the sibling project whose daemon/MCP/storage architecture this one is built on. Myelin's job is narrower and more personal: notice what you keep doing, and eventually stop making you re-explain it.</p>
+<div class="glow"></div>
+
+<header>
+  <div class="nav">
+    <a class="brand" href="#">
+      <img src="icon.svg" alt="">
+      Myelin
+    </a>
+    <nav class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#how">How it works</a>
+      <a href="#tools">Tools</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#status">Status</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/devNalyx/Myelin">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="badge">● MVP &middot; MCP-native &middot; zero config required</div>
+    <h1>Turn repeated practice into <span class="grad">instinct</span></h1>
+    <p class="lede">
+      Myelin watches your agentic coding sessions, notices recurring or high-stakes procedures, and —
+      once a pattern earns it — crystallizes it into a real <code>SKILL.md</code> that keeps mutating
+      from how it's actually used. Mine Your Everyday Learned Instincts, Naturally.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/devNalyx/Myelin">View on GitHub</a>
+      <a class="btn btn-ghost" href="#install">Quick install</a>
+    </div>
+    <div class="stat-row">
+      <div class="stat"><div class="n">6</div><div class="l">MCP tools</div></div>
+      <div class="stat"><div class="n">2</div><div class="l">Promotion paths</div></div>
+      <div class="stat"><div class="n">27</div><div class="l">Tests passing</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">Config required to start</div></div>
+    </div>
   </section>
 
-  <section>
-    <h2>How a skill gets made</h2>
-    <div class="cards">
+  <section id="why">
+    <div class="section-head">
+      <div class="kicker">Design philosophy</div>
+      <h2>The agent is the judgment. Myelin is the muscle memory.</h2>
+      <p>No daemon-side LLM decides what matters. It stores, matches, promotes, and keeps the resulting skill alive — the judgment call stays with the agent that reported it.</p>
+    </div>
+    <div class="grid">
       <div class="card">
-        <h3>1. Observe</h3>
+        <div class="icon">◷</div>
+        <h3>Warmup, not instant trust</h3>
+        <p>A pattern earns promotion by recurring across observations, or by an explicit high-stakes signal fast-tracking it off a single occurrence — never off frequency alone.</p>
+      </div>
+      <div class="card">
+        <div class="icon">✎</div>
+        <h3>Living skills</h3>
+        <p>A correction doesn't just get logged — it's appended straight into the live <code>SKILL.md</code>, so the file itself improves instead of rotting as a one-shot artifact.</p>
+      </div>
+      <div class="card">
+        <div class="icon">◔</div>
+        <h3>Usage-aware</h3>
+        <p>Skills nobody's invoked in a while get flagged stale, judged by last-used not last-modified — informational only, nothing deletes itself.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⌁</div>
+        <h3>Embeddings, optional</h3>
+        <p>Token-overlap matching works with zero config. Point it at any OpenAI-compatible endpoint for cosine-similarity matching instead — off by default, and it degrades to token-overlap on any failure.</p>
+      </div>
+      <div class="card">
+        <div class="icon">◆</div>
+        <h3>Safe by default</h3>
+        <p>Remote embedding endpoints are blocked unless loopback/private or explicitly allowed. Nothing calls out anywhere unless you turn it on.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⇄</div>
+        <h3>Built on proven bones</h3>
+        <p>The daemon/MCP/control-socket architecture is shared lineage with <a href="https://github.com/devNalyx/NexusContext" style="color:var(--accent);">NexusContext</a> — same posture, applied to behavior instead of code.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="section-head">
+      <div class="kicker">The loop</div>
+      <h2>How a skill gets made</h2>
+      <p>Four steps, all reachable over MCP today.</p>
+    </div>
+    <div class="grid steps">
+      <div class="card">
+        <div class="icon">1</div>
+        <h3>Observe</h3>
         <p>An agent reports a noteworthy procedure — a fix, a convention, a workaround — as it happens.</p>
       </div>
       <div class="card">
-        <h3>2. Warm up</h3>
-        <p>Similar observations accumulate reps in a queue. Nothing hardens on the first sighting alone.</p>
+        <div class="icon">2</div>
+        <h3>Warm up</h3>
+        <p>Similar observations accumulate reps in a queue, matched by token-overlap or embeddings.</p>
       </div>
       <div class="card">
-        <h3>3. Promote</h3>
-        <p>Enough reps, or an explicit high-stakes signal, and a real <code>SKILL.md</code> gets drafted and written — live immediately.</p>
+        <div class="icon">3</div>
+        <h3>Promote</h3>
+        <p>Enough reps, or a high-stakes signal, and a real <code>SKILL.md</code> is drafted and written — live immediately.</p>
       </div>
       <div class="card">
-        <h3>4. Stay alive</h3>
-        <p>Corrections get appended straight into the live file. Confirmations build confidence. Unused skills get flagged, not forgotten.</p>
+        <div class="icon">4</div>
+        <h3>Stay alive</h3>
+        <p>Corrections mutate the file directly. Confirmations build confidence. Unused skills get flagged, not forgotten.</p>
       </div>
     </div>
   </section>
 
-  <section>
-    <h2>Status</h2>
-    <p class="status-line">The full loop — observation → warmup queue → promotion → living <code>SKILL.md</code> → feedback → usage tracking — runs end to end today, with an optional embeddings-based similarity upgrade over the default token-overlap matching. Automatic session-transcript ingestion (with a redaction pass ahead of it) is in active development. See the <a href="https://github.com/devNalyx/Myelin#readme">README</a> for the honest, current split between what's implemented and what's still sketch.</p>
+  <section id="tools">
+    <div class="section-head">
+      <div class="kicker">What an agent can actually call</div>
+      <h2>6 MCP tools, grouped by what they do</h2>
+      <p>Every tool is backed by the same SQLite store — no separate index to keep in sync.</p>
+    </div>
+    <div class="tool-groups">
+      <div class="tool-group">
+        <div class="group-label">Capture</div>
+        <div class="tool-row">
+          <div class="name">record_observation</div>
+          <div class="desc">Report a noteworthy, domain-specific procedure. The extraction step, for now.</div>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="group-label">Warmup queue</div>
+        <div class="tool-row">
+          <div class="name">list_warmup_queue</div>
+          <div class="desc">Candidates still accumulating reps, not yet promoted.</div>
+        </div>
+        <div class="tool-row">
+          <div class="name">promote_skill</div>
+          <div class="desc">Force-promote a candidate now, bypassing the reps/high-stakes gate.</div>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="group-label">Feedback</div>
+        <div class="tool-row">
+          <div class="name">record_skill_feedback</div>
+          <div class="desc">Correction mutates the live file; confirmation logs confidence.</div>
+        </div>
+        <div class="tool-row">
+          <div class="name">mark_skill_used</div>
+          <div class="desc">Resets the staleness clock, independent of feedback.</div>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="group-label">Inspect</div>
+        <div class="tool-row">
+          <div class="name">list_skills</div>
+          <div class="desc">Promoted skills with full provenance — reason, observation count, staleness.</div>
+        </div>
+      </div>
+    </div>
   </section>
 
-  <footer>
-    <p>Part of the <a href="https://github.com/devNalyx">devNalyx</a> project family, alongside <a href="https://nc.nalyx.dev">NexusContext</a>.</p>
-  </footer>
+  <section id="architecture">
+    <div class="section-head">
+      <div class="kicker">How it fits together</div>
+      <h2>One daemon, one store, one live skill file per promotion</h2>
+      <p>The MCP stdio transport is the only path in — the control socket from the original scaffold isn't wired to this loop yet.</p>
+    </div>
+    <div class="diagram">
+<pre>                    ┌────────────────────────────────────┐
+   MCP clients ──────► <span class="hl">myelind mcp</span>  (stdio, per-session)      │
+ (Claude Code, etc.)  │   record_observation                 │
+                    │   list_warmup_queue · promote_skill    │
+                    │   record_skill_feedback · mark_skill_used│
+                    └────────────────────────────────────┘
+                               │
+                               ▼  shared SQLite store (WAL mode)
+                               │
+                               ▼  on promotion
+                    ┌────────────────────────────────────┐
+   ~/.claude/skills ◄── <span class="hl2">SKILL.md</span> written, live immediately     │
+                    │   corrections appended in place        │
+                    └────────────────────────────────────┘</pre>
+    </div>
+    <div class="specs">
+      <div class="spec"><div class="k">Storage</div><div class="v">SQLite, WAL journal mode</div></div>
+      <div class="spec"><div class="k">Matching</div><div class="v">Jaccard token-overlap, or cosine similarity if embeddings enabled</div></div>
+      <div class="spec"><div class="k">Promotion</div><div class="v">Reps threshold, or explicit high-stakes signal</div></div>
+      <div class="spec"><div class="k">Feedback</div><div class="v">Corrections appended live into the promoted file</div></div>
+      <div class="spec"><div class="k">Atrophy</div><div class="v">Informational stale flag, judged by last-invoked</div></div>
+      <div class="spec"><div class="k">Tests</div><div class="v">27 passing — unit + real MCP stdio protocol</div></div>
+    </div>
+  </section>
+
+  <section id="status">
+    <div class="section-head">
+      <div class="kicker">Honest, not aspirational</div>
+      <h2>What's real vs. still sketch</h2>
+      <p>Full detail in the <a href="https://github.com/devNalyx/Myelin#readme" style="color:var(--accent);">README</a>.</p>
+    </div>
+    <div class="status-grid">
+      <ul class="status-list done">
+        <li><span class="mark">✓</span> Observation → warmup queue → promotion loop</li>
+        <li><span class="mark">✓</span> Living <code>SKILL.md</code> — corrections mutate it directly</li>
+        <li><span class="mark">✓</span> Usage tracking + informational atrophy flag</li>
+        <li><span class="mark">✓</span> Optional embeddings-based similarity, policy-gated</li>
+        <li><span class="mark">✓</span> CI (fmt/clippy/test) + MCP protocol integration tests</li>
+      </ul>
+      <ul class="status-list pending">
+        <li><span class="mark">○</span> Automatic session-transcript ingestion via a <code>SessionEnd</code> hook</li>
+        <li><span class="mark">○</span> A redaction pass ahead of any transcript content</li>
+        <li><span class="mark">○</span> Scoped-neighborhood graph visualizer</li>
+        <li><span class="mark">○</span> Re-embedding older candidates after enabling embeddings later</li>
+        <li><span class="mark">○</span> Any action taken on a stale skill beyond the flag</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="section-head">
+      <div class="kicker">Get running in a minute</div>
+      <h2>Build, register, observe</h2>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span></span><span></span><span></span></div>
+      <pre><span class="cmt"># build</span>
+cargo build --release
+
+<span class="cmt"># register as an MCP server for Claude Code</span>
+claude mcp add myelin -s user -- "$(pwd)/target/release/myelind" mcp
+
+<span class="cmt"># or drive the CLI directly against the same store</span>
+myelin observe --title "apply db migration hotfix" \
+  --summary "run migrate.sh, restart service, verify health"
+myelin queue
+myelin skills</pre>
+    </div>
+    <p style="text-align:center; margin-top:20px; color:var(--text-dim); font-size:13.5px;">
+      Full walkthrough — data model, config options, pipeline detail — in the
+      <a href="https://github.com/devNalyx/Myelin#readme" style="color:var(--accent);">README</a>.
+    </p>
+  </section>
 </main>
+
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/devNalyx/Myelin">GitHub</a>
+    <a href="https://github.com/devNalyx/Myelin#readme">Documentation</a>
+    <a href="https://github.com/devNalyx/NexusContext">NexusContext</a>
+  </div>
+  Myelin — the layer that turns repeated practice into instinct.
+</footer>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
+
 </body>
 </html>

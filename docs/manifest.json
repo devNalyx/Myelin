@@ -1,0 +1,13 @@
+{
+  "name": "Myelin",
+  "short_name": "Myelin",
+  "description": "Mine Your Everyday Learned Instincts, Naturally — the layer that turns repeated practice into instinct.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
