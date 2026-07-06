@@ -4,16 +4,14 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Reps a candidate needs (with no high-stakes signal) before it auto-promotes.
-/// A guess, not a measured value — see README's open risks. Easy to find here
-/// and retune once there's real usage data.
-pub const PROMOTION_REPS: i64 = 3;
+/// Fallback reps threshold when a caller doesn't have a `myelin_core::Config`
+/// to load one from (e.g. tests). Kept here rather than depending on
+/// myelin-core, to keep this crate's dependency graph shallow. Must match
+/// `myelin_core::config::PromotionConfig`'s default.
+pub const DEFAULT_PROMOTION_REPS: i64 = 3;
 
-/// Token-overlap (Jaccard) threshold for "this observation is the same
-/// procedure as that candidate". Crude on purpose for MVP — no embeddings
-/// dependency required. Swap for real semantic similarity once this proves
-/// too blunt in practice.
-pub const SIMILARITY_THRESHOLD: f64 = 0.4;
+/// Fallback similarity threshold — see `DEFAULT_PROMOTION_REPS`.
+pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS skill_candidates (
@@ -59,6 +57,8 @@ CREATE TABLE IF NOT EXISTS corrections (
 
 pub struct Store {
     conn: Connection,
+    promotion_reps: i64,
+    similarity_threshold: f64,
 }
 
 pub struct NewObservation {
@@ -126,14 +126,21 @@ fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
 }
 
 impl Store {
-    pub fn open(db_path: &Path) -> anyhow::Result<Self> {
+    /// Opens (creating if needed) the store at `db_path`, with the given
+    /// promotion tuning. Use `DEFAULT_PROMOTION_REPS`/`DEFAULT_SIMILARITY_THRESHOLD`
+    /// if the caller has no config of its own.
+    pub fn open(db_path: &Path, promotion_reps: i64, similarity_threshold: f64) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(db_path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            promotion_reps,
+            similarity_threshold,
+        })
     }
 
     /// Records one observation, matches/creates its candidate, and promotes
@@ -165,7 +172,7 @@ impl Store {
                 let cand_tokens: HashSet<String> =
                     key.split(' ').filter(|s| !s.is_empty()).map(String::from).collect();
                 let score = jaccard(&tokens, &cand_tokens);
-                if score >= SIMILARITY_THRESHOLD
+                if score >= self.similarity_threshold
                     && best.as_ref().map(|b| score > b.1).unwrap_or(true)
                 {
                     best = Some((id, score, rep_count, status));
@@ -209,7 +216,7 @@ impl Store {
         let mut promoted = false;
         let mut skill_path = None;
 
-        if status == "warming" && (input.high_stakes || rep_count >= PROMOTION_REPS) {
+        if status == "warming" && (input.high_stakes || rep_count >= self.promotion_reps) {
             let reason = if input.high_stakes { "context_signal" } else { "reps" };
             skill_path = Some(self.promote_internal(candidate_id, reason, skills_dir)?);
             promoted = true;
@@ -378,5 +385,195 @@ impl Store {
             correction_count,
             confirmation_count,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A fresh, isolated (db_path, skills_dir) pair under the OS temp dir.
+    /// Not cleaned up afterward (harmless clutter in /tmp) — simplest thing
+    /// that avoids a tempfile dependency while staying collision-free
+    /// under parallel test execution.
+    fn scratch_dirs(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("myelin-test-{label}-{nanos}"));
+        (root.join("myelin.db"), root.join("skills"))
+    }
+
+    fn open_test_store(label: &str) -> (Store, std::path::PathBuf) {
+        let (db_path, skills_dir) = scratch_dirs(label);
+        let store = Store::open(&db_path, DEFAULT_PROMOTION_REPS, DEFAULT_SIMILARITY_THRESHOLD).unwrap();
+        (store, skills_dir)
+    }
+
+    fn obs(title: &str, summary: &str) -> NewObservation {
+        NewObservation {
+            title: title.to_string(),
+            summary: summary.to_string(),
+            project: None,
+            context_signal: None,
+            high_stakes: false,
+        }
+    }
+
+    #[test]
+    fn tokenize_lowercases_and_drops_short_tokens() {
+        let tokens = tokenize("Run DB Migration on X");
+        assert!(tokens.contains("run"));
+        assert!(tokens.contains("migration"));
+        assert!(!tokens.contains("db")); // len <= 2, filtered out
+        assert!(!tokens.contains("x"));
+    }
+
+    #[test]
+    fn jaccard_of_identical_sets_is_one() {
+        let a: HashSet<String> = ["run", "migration", "service"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(jaccard(&a, &a.clone()), 1.0);
+    }
+
+    #[test]
+    fn jaccard_of_disjoint_sets_is_zero() {
+        let a: HashSet<String> = ["run", "migration"].iter().map(|s| s.to_string()).collect();
+        let b: HashSet<String> = ["deploy", "service"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(jaccard(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn first_observation_creates_a_new_warming_candidate() {
+        let (store, skills_dir) = open_test_store("new-candidate");
+        let result = store
+            .record_observation(obs("apply db migration hotfix", "run migrate.sh"), &skills_dir)
+            .unwrap();
+        assert_eq!(result.rep_count, 1);
+        assert!(!result.promoted);
+        assert!(result.skill_path.is_none());
+    }
+
+    #[test]
+    fn similar_observation_increments_the_same_candidate() {
+        let (store, skills_dir) = open_test_store("increment-reps");
+        let first = store
+            .record_observation(
+                obs("apply db migration hotfix", "run migrate.sh then restart service"),
+                &skills_dir,
+            )
+            .unwrap();
+        let second = store
+            .record_observation(
+                obs(
+                    "apply db migration hotfix across services",
+                    "run migrate.sh then restart service",
+                ),
+                &skills_dir,
+            )
+            .unwrap();
+        assert_eq!(second.candidate_id, first.candidate_id);
+        assert_eq!(second.rep_count, 2);
+    }
+
+    #[test]
+    fn dissimilar_observation_creates_a_separate_candidate() {
+        let (store, skills_dir) = open_test_store("separate-candidate");
+        let first = store
+            .record_observation(obs("apply db migration hotfix", "run migrate.sh"), &skills_dir)
+            .unwrap();
+        let second = store
+            .record_observation(obs("rotate leaked api key", "revoke and reissue the key"), &skills_dir)
+            .unwrap();
+        assert_ne!(first.candidate_id, second.candidate_id);
+    }
+
+    #[test]
+    fn reps_threshold_promotes_and_writes_a_real_skill_file() {
+        let (store, skills_dir) = open_test_store("reps-promotion");
+        let title = "apply db migration hotfix";
+        let summary = "run migrate.sh then restart service then verify health";
+        store.record_observation(obs(title, summary), &skills_dir).unwrap();
+        store.record_observation(obs(title, summary), &skills_dir).unwrap();
+        let third = store.record_observation(obs(title, summary), &skills_dir).unwrap();
+
+        assert!(third.promoted);
+        let path = third.skill_path.unwrap();
+        assert!(std::path::Path::new(&path).exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name:"));
+        assert!(content.contains(title));
+
+        let skills = store.list_skills().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].promoted_reason, "reps");
+        assert_eq!(skills[0].observation_count, 3);
+    }
+
+    #[test]
+    fn high_stakes_promotes_on_the_first_observation() {
+        let (store, skills_dir) = open_test_store("high-stakes-promotion");
+        let mut input = obs("roll out CVE patch", "bump the dependency, run the scanner");
+        input.high_stakes = true;
+        input.context_signal = Some("security ticket: needs to land in all repos this week".into());
+
+        let result = store.record_observation(input, &skills_dir).unwrap();
+        assert!(result.promoted);
+        assert_eq!(result.rep_count, 1);
+
+        let skills = store.list_skills().unwrap();
+        assert_eq!(skills[0].promoted_reason, "context_signal");
+    }
+
+    #[test]
+    fn manual_promote_works_and_rejects_double_promotion() {
+        let (store, skills_dir) = open_test_store("manual-promote");
+        let result = store
+            .record_observation(obs("one-off thing", "did it once"), &skills_dir)
+            .unwrap();
+        assert!(!result.promoted); // only 1 rep, no high_stakes -> still warming
+
+        store.promote_candidate(result.candidate_id, &skills_dir).unwrap();
+        let err = store.promote_candidate(result.candidate_id, &skills_dir).unwrap_err();
+        assert!(err.to_string().contains("already promoted"));
+    }
+
+    #[test]
+    fn correction_appends_to_the_live_skill_file_confirmation_does_not() {
+        let (store, skills_dir) = open_test_store("feedback");
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        let result = store.record_observation(input, &skills_dir).unwrap();
+        let skill_id = store.list_skills().unwrap()[0].id;
+        let path = result.skill_path.unwrap();
+
+        let before = std::fs::read_to_string(&path).unwrap();
+        store
+            .record_skill_feedback(skill_id, "confirmation", "worked as written")
+            .unwrap();
+        let after_confirmation = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before, after_confirmation);
+
+        let feedback = store
+            .record_skill_feedback(skill_id, "correction", "also invalidate cached tokens")
+            .unwrap();
+        assert_eq!(feedback.correction_count, 1);
+        assert_eq!(feedback.confirmation_count, 1);
+        let after_correction = std::fs::read_to_string(&path).unwrap();
+        assert!(after_correction.contains("## Corrections"));
+        assert!(after_correction.contains("also invalidate cached tokens"));
+    }
+
+    #[test]
+    fn feedback_rejects_invalid_kind_and_unknown_skill() {
+        let (store, skills_dir) = open_test_store("feedback-errors");
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        store.record_observation(input, &skills_dir).unwrap();
+        let skill_id = store.list_skills().unwrap()[0].id;
+
+        let bad_kind = store.record_skill_feedback(skill_id, "bogus", "note").unwrap_err();
+        assert!(bad_kind.to_string().contains("kind must be"));
+
+        let bad_id = store.record_skill_feedback(999_999, "confirmation", "note").unwrap_err();
+        assert!(bad_id.to_string().contains("no such skill"));
     }
 }

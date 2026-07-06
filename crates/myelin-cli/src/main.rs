@@ -66,7 +66,13 @@ fn main() -> Result<()> {
 }
 
 fn open_store() -> Result<Store> {
-    Store::open(&myelin_core::Paths::resolve().db_file())
+    let paths = myelin_core::Paths::resolve();
+    let config = myelin_core::Config::load(&paths.config_file())?;
+    Store::open(
+        &paths.db_file(),
+        config.promotion.reps,
+        config.promotion.similarity_threshold,
+    )
 }
 
 fn observe(

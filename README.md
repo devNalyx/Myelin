@@ -52,7 +52,7 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 
 **Implemented:**
 1. The calling agent reports a noteworthy procedure via the `record_observation` MCP tool (or `myelin observe` for debugging) — this **is** the extraction step for now: no transcript mining, no separate LLM call, no redaction subsystem, because the reporting agent already decides what's worth saying and never passes along anything it shouldn't.
-2. Token-overlap (Jaccard) matching against existing candidates — a real, crude, no-embeddings-required stand-in for "is this the same procedure." (`PROMOTION_REPS = 3`, `SIMILARITY_THRESHOLD = 0.4` in `store.rs` — guesses, easy to retune.)
+2. Token-overlap (Jaccard) matching against existing candidates — a real, crude, no-embeddings-required stand-in for "is this the same procedure." Tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values).
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
@@ -112,3 +112,15 @@ Three similarly-worded `observe` calls (or one with `--high-stakes`) will drop a
 Registered in this environment via `claude mcp add myelin -s user -- <path>/target/debug/myelind mcp` — live in every session from the next `claude`/`claude --resume` onward.
 
 The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to this loop — it's the separate GUI/status-check channel from the original scaffold, not yet wired to anything new.
+
+Config lives at `~/.config/myelin/config.toml` (all optional, missing file = defaults):
+
+```toml
+[promotion]
+reps = 3                    # observations needed before a candidate auto-promotes
+similarity_threshold = 0.4  # Jaccard token-overlap threshold, 0.0-1.0
+```
+
+## 10. Tests
+
+`cargo test --workspace` — 11 tests in `myelin-index` cover tokenize/jaccard, both promotion paths (reps and high-stakes), manual promotion + the double-promotion error, and the feedback loop (correction actually mutates the file on disk, confirmation doesn't, invalid kind/unknown skill both error cleanly). No integration tests against the MCP protocol yet — that layer has only been verified manually so far (see commit history).

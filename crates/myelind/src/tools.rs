@@ -3,7 +3,12 @@ use serde_json::{json, Value};
 
 fn open_store() -> anyhow::Result<Store> {
     let paths = myelin_core::Paths::resolve();
-    Store::open(&paths.db_file())
+    let config = myelin_core::Config::load(&paths.config_file())?;
+    Store::open(
+        &paths.db_file(),
+        config.promotion.reps,
+        config.promotion.similarity_threshold,
+    )
 }
 
 fn skills_dir() -> std::path::PathBuf {
