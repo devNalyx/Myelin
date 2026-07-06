@@ -129,7 +129,11 @@ impl Store {
     /// Opens (creating if needed) the store at `db_path`, with the given
     /// promotion tuning. Use `DEFAULT_PROMOTION_REPS`/`DEFAULT_SIMILARITY_THRESHOLD`
     /// if the caller has no config of its own.
-    pub fn open(db_path: &Path, promotion_reps: i64, similarity_threshold: f64) -> anyhow::Result<Self> {
+    pub fn open(
+        db_path: &Path,
+        promotion_reps: i64,
+        similarity_threshold: f64,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -169,8 +173,11 @@ impl Store {
             })?;
             for row in rows {
                 let (id, key, rep_count, status) = row?;
-                let cand_tokens: HashSet<String> =
-                    key.split(' ').filter(|s| !s.is_empty()).map(String::from).collect();
+                let cand_tokens: HashSet<String> = key
+                    .split(' ')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
                 let score = jaccard(&tokens, &cand_tokens);
                 if score >= self.similarity_threshold
                     && best.as_ref().map(|b| score > b.1).unwrap_or(true)
@@ -217,7 +224,11 @@ impl Store {
         let mut skill_path = None;
 
         if status == "warming" && (input.high_stakes || rep_count >= self.promotion_reps) {
-            let reason = if input.high_stakes { "context_signal" } else { "reps" };
+            let reason = if input.high_stakes {
+                "context_signal"
+            } else {
+                "reps"
+            };
             skill_path = Some(self.promote_internal(candidate_id, reason, skills_dir)?);
             promoted = true;
         }
@@ -232,7 +243,11 @@ impl Store {
 
     /// Force-promotes a candidate regardless of reps/high-stakes state.
     /// Errors if it's already promoted.
-    pub fn promote_candidate(&self, candidate_id: i64, skills_dir: &Path) -> anyhow::Result<String> {
+    pub fn promote_candidate(
+        &self,
+        candidate_id: i64,
+        skills_dir: &Path,
+    ) -> anyhow::Result<String> {
         let status: String = self
             .conn
             .query_row(
@@ -259,16 +274,17 @@ impl Store {
             |r| r.get(0),
         )?;
 
-        let mut stmt = self
-            .conn
-            .prepare("SELECT summary, project FROM observations WHERE candidate_id = ?1 ORDER BY id")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT summary, project FROM observations WHERE candidate_id = ?1 ORDER BY id",
+        )?;
         let summaries: Vec<(String, Option<String>)> = stmt
             .query_map(params![candidate_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
             })?
             .collect::<Result<_, _>>()?;
 
-        let (slug, path) = crate::skillfile::draft_and_write(&title, &summaries, reason, skills_dir)?;
+        let (slug, path) =
+            crate::skillfile::draft_and_write(&title, &summaries, reason, skills_dir)?;
         let now = Utc::now().to_rfc3339();
         let path_str = path.to_string_lossy().to_string();
 
@@ -398,14 +414,22 @@ mod tests {
     /// that avoids a tempfile dependency while staying collision-free
     /// under parallel test execution.
     fn scratch_dirs(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let root = std::env::temp_dir().join(format!("myelin-test-{label}-{nanos}"));
         (root.join("myelin.db"), root.join("skills"))
     }
 
     fn open_test_store(label: &str) -> (Store, std::path::PathBuf) {
         let (db_path, skills_dir) = scratch_dirs(label);
-        let store = Store::open(&db_path, DEFAULT_PROMOTION_REPS, DEFAULT_SIMILARITY_THRESHOLD).unwrap();
+        let store = Store::open(
+            &db_path,
+            DEFAULT_PROMOTION_REPS,
+            DEFAULT_SIMILARITY_THRESHOLD,
+        )
+        .unwrap();
         (store, skills_dir)
     }
 
@@ -430,14 +454,20 @@ mod tests {
 
     #[test]
     fn jaccard_of_identical_sets_is_one() {
-        let a: HashSet<String> = ["run", "migration", "service"].iter().map(|s| s.to_string()).collect();
+        let a: HashSet<String> = ["run", "migration", "service"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(jaccard(&a, &a.clone()), 1.0);
     }
 
     #[test]
     fn jaccard_of_disjoint_sets_is_zero() {
         let a: HashSet<String> = ["run", "migration"].iter().map(|s| s.to_string()).collect();
-        let b: HashSet<String> = ["deploy", "service"].iter().map(|s| s.to_string()).collect();
+        let b: HashSet<String> = ["deploy", "service"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(jaccard(&a, &b), 0.0);
     }
 
@@ -445,7 +475,10 @@ mod tests {
     fn first_observation_creates_a_new_warming_candidate() {
         let (store, skills_dir) = open_test_store("new-candidate");
         let result = store
-            .record_observation(obs("apply db migration hotfix", "run migrate.sh"), &skills_dir)
+            .record_observation(
+                obs("apply db migration hotfix", "run migrate.sh"),
+                &skills_dir,
+            )
             .unwrap();
         assert_eq!(result.rep_count, 1);
         assert!(!result.promoted);
@@ -457,7 +490,10 @@ mod tests {
         let (store, skills_dir) = open_test_store("increment-reps");
         let first = store
             .record_observation(
-                obs("apply db migration hotfix", "run migrate.sh then restart service"),
+                obs(
+                    "apply db migration hotfix",
+                    "run migrate.sh then restart service",
+                ),
                 &skills_dir,
             )
             .unwrap();
@@ -478,10 +514,16 @@ mod tests {
     fn dissimilar_observation_creates_a_separate_candidate() {
         let (store, skills_dir) = open_test_store("separate-candidate");
         let first = store
-            .record_observation(obs("apply db migration hotfix", "run migrate.sh"), &skills_dir)
+            .record_observation(
+                obs("apply db migration hotfix", "run migrate.sh"),
+                &skills_dir,
+            )
             .unwrap();
         let second = store
-            .record_observation(obs("rotate leaked api key", "revoke and reissue the key"), &skills_dir)
+            .record_observation(
+                obs("rotate leaked api key", "revoke and reissue the key"),
+                &skills_dir,
+            )
             .unwrap();
         assert_ne!(first.candidate_id, second.candidate_id);
     }
@@ -491,9 +533,15 @@ mod tests {
         let (store, skills_dir) = open_test_store("reps-promotion");
         let title = "apply db migration hotfix";
         let summary = "run migrate.sh then restart service then verify health";
-        store.record_observation(obs(title, summary), &skills_dir).unwrap();
-        store.record_observation(obs(title, summary), &skills_dir).unwrap();
-        let third = store.record_observation(obs(title, summary), &skills_dir).unwrap();
+        store
+            .record_observation(obs(title, summary), &skills_dir)
+            .unwrap();
+        store
+            .record_observation(obs(title, summary), &skills_dir)
+            .unwrap();
+        let third = store
+            .record_observation(obs(title, summary), &skills_dir)
+            .unwrap();
 
         assert!(third.promoted);
         let path = third.skill_path.unwrap();
@@ -531,8 +579,12 @@ mod tests {
             .unwrap();
         assert!(!result.promoted); // only 1 rep, no high_stakes -> still warming
 
-        store.promote_candidate(result.candidate_id, &skills_dir).unwrap();
-        let err = store.promote_candidate(result.candidate_id, &skills_dir).unwrap_err();
+        store
+            .promote_candidate(result.candidate_id, &skills_dir)
+            .unwrap();
+        let err = store
+            .promote_candidate(result.candidate_id, &skills_dir)
+            .unwrap_err();
         assert!(err.to_string().contains("already promoted"));
     }
 
@@ -570,10 +622,14 @@ mod tests {
         store.record_observation(input, &skills_dir).unwrap();
         let skill_id = store.list_skills().unwrap()[0].id;
 
-        let bad_kind = store.record_skill_feedback(skill_id, "bogus", "note").unwrap_err();
+        let bad_kind = store
+            .record_skill_feedback(skill_id, "bogus", "note")
+            .unwrap_err();
         assert!(bad_kind.to_string().contains("kind must be"));
 
-        let bad_id = store.record_skill_feedback(999_999, "confirmation", "note").unwrap_err();
+        let bad_id = store
+            .record_skill_feedback(999_999, "confirmation", "note")
+            .unwrap_err();
         assert!(bad_id.to_string().contains("no such skill"));
     }
 }

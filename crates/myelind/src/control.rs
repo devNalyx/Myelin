@@ -37,10 +37,7 @@ fn handle_client(mut stream: UnixStream) -> anyhow::Result<()> {
     reader.read_line(&mut line)?;
 
     let request: Value = serde_json::from_str(line.trim())?;
-    let method = request
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
     let response = match method {
         "status.get" => json!({

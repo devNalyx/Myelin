@@ -34,9 +34,7 @@ enum Command {
     /// List promoted skills.
     Skills,
     /// Force-promote a candidate now.
-    Promote {
-        candidate_id: i64,
-    },
+    Promote { candidate_id: i64 },
     /// Record feedback on a promoted skill (correction appends into the
     /// live SKILL.md; confirmation just logs).
     Feedback {
@@ -61,7 +59,11 @@ fn main() -> Result<()> {
         Command::Queue => queue(),
         Command::Skills => skills(),
         Command::Promote { candidate_id } => promote(candidate_id),
-        Command::Feedback { skill_id, kind, note } => feedback(skill_id, kind, note),
+        Command::Feedback {
+            skill_id,
+            kind,
+            note,
+        } => feedback(skill_id, kind, note),
     }
 }
 

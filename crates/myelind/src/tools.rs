@@ -80,12 +80,18 @@ pub fn call(params: Value) -> anyhow::Result<Value> {
             let input = NewObservation {
                 title: field_str(&args, "title")?,
                 summary: field_str(&args, "summary")?,
-                project: args.get("project").and_then(|v| v.as_str()).map(str::to_string),
+                project: args
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
                 context_signal: args
                     .get("context_signal")
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
-                high_stakes: args.get("high_stakes").and_then(|v| v.as_bool()).unwrap_or(false),
+                high_stakes: args
+                    .get("high_stakes")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             };
             let result = store.record_observation(input, &skills_dir())?;
             Ok(serde_json::to_value(result)?)
@@ -93,7 +99,9 @@ pub fn call(params: Value) -> anyhow::Result<Value> {
         "list_warmup_queue" => {
             let store = open_store()?;
             let candidates = store.list_candidates()?;
-            Ok(json!({ "candidates": candidates.into_iter().filter(|c| c.status == "warming").collect::<Vec<_>>() }))
+            Ok(
+                json!({ "candidates": candidates.into_iter().filter(|c| c.status == "warming").collect::<Vec<_>>() }),
+            )
         }
         "list_skills" => {
             let store = open_store()?;
