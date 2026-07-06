@@ -104,8 +104,14 @@ fn stage_correction_language(turns: &[TranscriptTurn], out: &mut Vec<StagedCandi
 
 fn high_stakes_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
+    // `100\+` is split out from the shared trailing `\b`: a trailing word
+    // boundary after `+` can never match when `+` is followed by a space
+    // or punctuation (both non-word chars either side means no
+    // boundary), which is the realistic phrasing ("100+ repos") - found
+    // by testing this heuristic against a real session where it silently
+    // failed to fire on exactly that text.
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(all repos|every service|fleet-wide|100\+|roll ?out|ticket|jira-\d+|across the (org|company))\b")
+        Regex::new(r"(?i)\b(all repos|every service|fleet-wide|roll ?out|ticket|jira-\d+|across the (org|company))\b|\b100\+")
             .unwrap()
     })
 }
@@ -212,6 +218,22 @@ mod tests {
     fn flags_high_stakes_phrasing() {
         let turns = vec![user_turn(
             "this needs to roll out fleet-wide across every service by Friday",
+        )];
+        let candidates = stage_candidates(&turns);
+        assert!(candidates
+            .iter()
+            .any(|c| c.heuristic_reason == "high-stakes-phrasing"));
+    }
+
+    /// Regression test for a real bug found by running this heuristic
+    /// against a real session transcript: "100+ repos" (a space after
+    /// the `+`, the realistic phrasing) silently failed to match because
+    /// a shared trailing `\b` can never fire right after `+` followed by
+    /// whitespace - both sides of that position are non-word characters.
+    #[test]
+    fn flags_bare_100_plus_notation_followed_by_a_space() {
+        let turns = vec![user_turn(
+            "eventually need to work across 100+ repos for this rollout",
         )];
         let candidates = stage_candidates(&turns);
         assert!(candidates
