@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Myelin</title>
+<meta name="description" content="Myelin — the layer that turns repeated practice into instinct. A local daemon that notices recurring or high-stakes procedures in your agentic coding sessions and crystallizes them into real, living Claude Code skills.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --fg: #1a1a1a;
+    --muted: #5a5a5a;
+    --accent: #7a4fd1;
+    --line: #e4e0da;
+    --card: #ffffff;
+    --code-bg: #f1efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14131a;
+      --fg: #ececec;
+      --muted: #a8a6ac;
+      --accent: #b79bff;
+      --line: #2c2a35;
+      --card: #1b1a22;
+      --code-bg: #211f29;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+  }
+  header {
+    margin-bottom: 3rem;
+  }
+  .wordmark {
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.5rem;
+  }
+  .wordmark span {
+    color: var(--accent);
+  }
+  .tagline {
+    font-size: 1.15rem;
+    color: var(--muted);
+    margin: 0 0 1.5rem;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+  }
+  h2 {
+    font-size: 1.05rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 3rem 0 1rem;
+  }
+  p { margin: 0 0 1rem; }
+  .lede {
+    font-size: 1.1rem;
+  }
+  ol, ul {
+    padding-left: 1.3rem;
+  }
+  li {
+    margin-bottom: 0.6rem;
+  }
+  code {
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+    font-size: 0.9em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+  a:hover {
+    border-bottom-color: currentColor;
+  }
+  .cards {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    margin: 1.5rem 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.1rem 1.2rem;
+  }
+  .card h3 {
+    margin: 0 0 0.4rem;
+    font-size: 0.95rem;
+  }
+  .card p {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+  .cta {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+  }
+  .btn {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    font-size: 0.92rem;
+    font-weight: 600;
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #14131a;
+  }
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .status-line {
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="badge">MVP &middot; actively evolving</p>
+    <h1 class="wordmark">Myel<span>i</span>n</h1>
+    <p class="tagline">Mine Your Everyday Learned Instincts, Naturally.</p>
+    <p class="lede">The layer that turns repeated practice into instinct — the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/devNalyx/Myelin">View on GitHub</a>
+      <a class="btn" href="https://github.com/devNalyx/Myelin#readme">Read the design doc</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>What it is</h2>
+    <p>A local daemon that watches your agentic coding sessions, notices recurring or high-stakes procedures, and — once a pattern earns it — crystallizes it into a real <a href="https://code.claude.com/docs/en/skills">Claude Code Skill</a> that keeps mutating from how it's actually used afterward.</p>
+    <p>It isn't "index my codebase" — that's <a href="https://github.com/devNalyx/NexusContext">NexusContext</a>, the sibling project whose daemon/MCP/storage architecture this one is built on. Myelin's job is narrower and more personal: notice what you keep doing, and eventually stop making you re-explain it.</p>
+  </section>
+
+  <section>
+    <h2>How a skill gets made</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>1. Observe</h3>
+        <p>An agent reports a noteworthy procedure — a fix, a convention, a workaround — as it happens.</p>
+      </div>
+      <div class="card">
+        <h3>2. Warm up</h3>
+        <p>Similar observations accumulate reps in a queue. Nothing hardens on the first sighting alone.</p>
+      </div>
+      <div class="card">
+        <h3>3. Promote</h3>
+        <p>Enough reps, or an explicit high-stakes signal, and a real <code>SKILL.md</code> gets drafted and written — live immediately.</p>
+      </div>
+      <div class="card">
+        <h3>4. Stay alive</h3>
+        <p>Corrections get appended straight into the live file. Confirmations build confidence. Unused skills get flagged, not forgotten.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <p class="status-line">The full loop — observation → warmup queue → promotion → living <code>SKILL.md</code> → feedback → usage tracking — runs end to end today, with an optional embeddings-based similarity upgrade over the default token-overlap matching. Automatic session-transcript ingestion (with a redaction pass ahead of it) is in active development. See the <a href="https://github.com/devNalyx/Myelin#readme">README</a> for the honest, current split between what's implemented and what's still sketch.</p>
+  </section>
+
+  <footer>
+    <p>Part of the <a href="https://github.com/devNalyx">devNalyx</a> project family, alongside <a href="https://nc.nalyx.dev">NexusContext</a>.</p>
+  </footer>
+</main>
+</body>
+</html>
