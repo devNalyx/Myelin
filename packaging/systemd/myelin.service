@@ -1,6 +1,6 @@
 [Unit]
 Description=Myelin personal skill-formation daemon
-Documentation=https://github.com/
+Documentation=https://github.com/devNalyx/Myelin
 After=default.target
 
 [Service]

@@ -85,6 +85,7 @@ Not adopted yet — noted here as the likely export/interop format once there's 
 - **The transcript parser's schema was mostly built without verification, and has now been checked against exactly one real transcript.** Only top-level `type` field names were ever safely inspected before that (reading another session's actual content without explicit authorization wasn't something to do casually, even for development); the content-block shape it assumes is the standard, documented Anthropic Messages API format. It correctly parsed a real 454-tool-call session on the first real run — genuine signal, but one session isn't broad coverage, and a real bug was found in the same run (see below), so "worked once" isn't "confirmed correct" either.
 - The heuristic staging thresholds are first-guess pattern matching. One (`100+` in high-stakes-phrasing) was already found broken against real text — a shared trailing `\b` could never match `+` followed by a space — and fixed; the rest (4+ tool calls, the other regexes) are still unverified against real sessions beyond that one run.
 - Redaction is broad/aggressive by design but not comprehensive PII scrubbing — a secret in a format it doesn't recognize gets through
+- No `license` field is set anywhere in the workspace (`cargo deb` flags this at build time) — an open decision, not an oversight; nothing here should be treated as licensed for reuse until that's resolved
 
 ## 8. Current layout
 
@@ -160,6 +161,16 @@ similarity_threshold = 0.4  # Jaccard token-overlap threshold, 0.0-1.0
 [atrophy]
 stale_after_secs = 2592000  # 30 days; flags a skill `stale` in list_skills, doesn't act on it
 ```
+
+**Packaging:** a `.deb` bundling both binaries plus the systemd unit.
+
+```
+cargo build --release
+cargo deb -p myelind --no-build
+sudo dpkg -i target/debian/myelin_*.deb
+```
+
+Verified end to end: installs `myelind`/`myelin` to `/usr/bin/`, the unit to `/usr/lib/systemd/user/myelin.service` (`systemd-analyze --user verify` passes), and `systemctl --user start myelin.service` actually runs — confirmed live, not just built. `sudo dpkg -r myelin` removes cleanly. Not yet published anywhere (no releases, no `.rpm`) — this is a local build target for now, and independent of the `target/release` binary this environment's MCP server/hook actually point at.
 
 ## 10. Tests
 
