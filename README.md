@@ -4,7 +4,7 @@
 
 Myelin — the layer that turns repeated practice into instinct, the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.
 
-**Status:** MVP. The warmup-queue → promotion → real-`SKILL.md` loop works end-to-end, verified over the actual MCP stdio protocol. What's *not* built yet: automatic transcript ingestion, redaction, embeddings-based similarity, and the living-skill feedback loop — see §4/§5 for what's real vs. still sketch.
+**Status:** MVP, registered as a live user-scoped MCP server (`claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file — works end-to-end, verified over the actual MCP stdio protocol. What's *not* built yet: automatic transcript ingestion, redaction, embeddings-based similarity, and atrophy — see §4/§5 for what's real vs. still sketch.
 
 ---
 
@@ -41,11 +41,12 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 - `observations` — title, summary, project, context_signal, high_stakes, linked to its candidate
 - `skill_candidates` — title, token-overlap `key`, `rep_count`, `status` (`warming`/`promoted`)
 - `skills` — slug, path to the written `SKILL.md`, `promoted_reason` (`reps`/`context_signal`/`manual`), observation count, provenance timestamp
+- `corrections` — skill_id, `kind` (`correction`/`confirmation`), note, timestamp; corrections also get appended live into the skill's actual `SKILL.md`
 
 **Sketch, not yet implemented:**
 - `Session` node (a source transcript) — there's no transcript ingestion yet, so observations are reported directly by the calling agent instead of mined from a `Session`
-- `Correction` node / `CORRECTS`-`REINFORCES` edges — the living-skill feedback loop (a skill mutating from how it's actually used) doesn't exist yet; promoted skills are static once written
-- `SUPERSEDES` edges — no skill versioning yet, a promotion is a one-shot write
+- `SUPERSEDES` edges — no skill versioning yet, a correction appends to the file rather than creating a new version
+- Any notion of skill staleness/atrophy — nothing tracks whether a promoted skill is actually still being invoked
 
 ## 5. Pipeline
 
@@ -54,13 +55,13 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 2. Token-overlap (Jaccard) matching against existing candidates — a real, crude, no-embeddings-required stand-in for "is this the same procedure." (`PROMOTION_REPS = 3`, `SIMILARITY_THRESHOLD = 0.4` in `store.rs` — guesses, easy to retune.)
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
+5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
 
 **Still sketch, not yet implemented:**
 - Automatic transcript ingestion (watching `*.jsonl` session files instead of relying on an explicit tool call)
 - A redaction pass (moot right now since nothing auto-ingests raw transcripts, but a hard blocker before that changes)
 - Embeddings-based similarity (upgrade path once token-overlap proves too blunt)
-- The living-skill feedback loop: corrections/rejections mutating a promoted skill's instructions
-- Atrophy (flagging unused skills) and the scoped-neighborhood graph visualizer
+- Atrophy (flagging skills nobody's invoked in a while) and the scoped-neighborhood graph visualizer
 
 ## 6. Interop note: Open Knowledge Format (OKF)
 
@@ -81,8 +82,8 @@ Not adopted yet — noted here as the likely export/interop format once there's 
 crates/
   myelin-core/   # shared lib: Config, Paths, Error
   myelin-index/  # SQLite store, similarity matching, promotion, SKILL.md drafting
-  myelind/       # daemon: `mcp` (stdio JSON-RPC, 4 tools) and `serve` (control socket) subcommands
-  myelin-cli/    # `myelin status|observe|queue|skills|promote`
+  myelind/       # daemon: `mcp` (stdio JSON-RPC, 5 tools) and `serve` (control socket) subcommands
+  myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback`
 packaging/systemd/myelin.service
 ```
 
@@ -103,8 +104,11 @@ Or directly via the CLI, against the same SQLite store:
 ./target/debug/myelin queue     # candidates still warming up
 ./target/debug/myelin skills    # promoted skills, with provenance
 ./target/debug/myelin promote <candidate_id>   # force-promote early
+./target/debug/myelin feedback <skill_id> --kind correction --note "..."  # mutates the live SKILL.md
 ```
 
 Three similarly-worded `observe` calls (or one with `--high-stakes`) will drop a real `SKILL.md` into `~/.claude/skills/<slug>/` — override the location with `MYELIN_SKILLS_DIR` for testing.
+
+Registered in this environment via `claude mcp add myelin -s user -- <path>/target/debug/myelind mcp` — live in every session from the next `claude`/`claude --resume` onward.
 
 The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to this loop — it's the separate GUI/status-check channel from the original scaffold, not yet wired to anything new.

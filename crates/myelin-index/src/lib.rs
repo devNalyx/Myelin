@@ -1,4 +1,4 @@
 pub mod skillfile;
 pub mod store;
 
-pub use store::{CandidateView, NewObservation, RecordResult, SkillView, Store};
+pub use store::{CandidateView, FeedbackResult, NewObservation, RecordResult, SkillView, Store};

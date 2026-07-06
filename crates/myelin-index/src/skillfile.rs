@@ -81,3 +81,18 @@ pub fn draft_and_write(
     fs::write(&path, content)?;
     Ok((slug, path))
 }
+
+/// Appends a correction directly into the live SKILL.md body — this is
+/// what makes a promoted skill a living document instead of a one-shot
+/// artifact: it accumulates real fixes at the point they're reported,
+/// rather than needing a human to notice and edit the file.
+pub fn append_correction(path: &Path, note: &str) -> anyhow::Result<()> {
+    let mut content = fs::read_to_string(path)?;
+    if !content.contains("\n## Corrections\n") {
+        content.push_str("\n## Corrections\n\n");
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    content.push_str(&format!("- ({now}) {note}\n"));
+    fs::write(path, content)?;
+    Ok(())
+}

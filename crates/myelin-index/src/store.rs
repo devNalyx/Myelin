@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS skills (
     observation_count INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id INTEGER NOT NULL REFERENCES skills(id),
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    note TEXT NOT NULL
+);
 ";
 
 pub struct Store {
@@ -89,6 +97,15 @@ pub struct SkillView {
     pub promoted_reason: String,
     pub observation_count: i64,
     pub created_at: String,
+    pub correction_count: i64,
+    pub confirmation_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FeedbackResult {
+    pub skill_id: i64,
+    pub correction_count: i64,
+    pub confirmation_count: i64,
 }
 
 fn tokenize(text: &str) -> HashSet<String> {
@@ -290,8 +307,11 @@ impl Store {
 
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillView>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, candidate_id, slug, name, path, promoted_reason, observation_count, created_at
-             FROM skills ORDER BY created_at DESC",
+            "SELECT s.id, s.candidate_id, s.slug, s.name, s.path, s.promoted_reason,
+                    s.observation_count, s.created_at,
+                    (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'correction'),
+                    (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'confirmation')
+             FROM skills s ORDER BY s.created_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SkillView {
@@ -303,8 +323,60 @@ impl Store {
                 promoted_reason: row.get(5)?,
                 observation_count: row.get(6)?,
                 created_at: row.get(7)?,
+                correction_count: row.get(8)?,
+                confirmation_count: row.get(9)?,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Records feedback on a promoted skill. `kind` is "correction" (the
+    /// skill's instructions were wrong/incomplete — appended directly into
+    /// the live SKILL.md, so it actually improves) or "confirmation" (it
+    /// worked as written — logged for confidence, doesn't touch the file).
+    pub fn record_skill_feedback(
+        &self,
+        skill_id: i64,
+        kind: &str,
+        note: &str,
+    ) -> anyhow::Result<FeedbackResult> {
+        if kind != "correction" && kind != "confirmation" {
+            anyhow::bail!("kind must be 'correction' or 'confirmation', got '{kind}'");
+        }
+        let path: String = self
+            .conn
+            .query_row(
+                "SELECT path FROM skills WHERE id = ?1",
+                params![skill_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| anyhow::anyhow!("no such skill: {skill_id}"))?;
+
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO corrections (skill_id, created_at, kind, note) VALUES (?1, ?2, ?3, ?4)",
+            params![skill_id, now, kind, note],
+        )?;
+
+        if kind == "correction" {
+            crate::skillfile::append_correction(Path::new(&path), note)?;
+        }
+
+        let correction_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM corrections WHERE skill_id = ?1 AND kind = 'correction'",
+            params![skill_id],
+            |r| r.get(0),
+        )?;
+        let confirmation_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM corrections WHERE skill_id = ?1 AND kind = 'confirmation'",
+            params![skill_id],
+            |r| r.get(0),
+        )?;
+
+        Ok(FeedbackResult {
+            skill_id,
+            correction_count,
+            confirmation_count,
+        })
     }
 }

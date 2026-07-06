@@ -45,6 +45,19 @@ pub fn tool_definitions() -> Value {
                 "properties": { "candidate_id": { "type": "integer" } },
                 "required": ["candidate_id"]
             }
+        },
+        {
+            "name": "record_skill_feedback",
+            "description": "Report feedback on a promoted skill after actually using it. Call this whenever you follow an existing skill and it turns out wrong or incomplete (kind='correction' — this appends your note directly into the live SKILL.md, so the skill itself improves) or it worked exactly as written (kind='confirmation' — logged to build confidence, doesn't touch the file). This is what keeps a promoted skill a living document instead of a static one-shot artifact.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "skill_id": { "type": "integer", "description": "From list_skills." },
+                    "kind": { "type": "string", "enum": ["correction", "confirmation"] },
+                    "note": { "type": "string", "description": "For a correction: what was wrong and what actually worked. For a confirmation: brief context on what was done." }
+                },
+                "required": ["skill_id", "kind", "note"]
+            }
         }
     ])
 }
@@ -89,6 +102,17 @@ pub fn call(params: Value) -> anyhow::Result<Value> {
                 .ok_or_else(|| anyhow::anyhow!("missing candidate_id"))?;
             let path = store.promote_candidate(candidate_id, &skills_dir())?;
             Ok(json!({ "promoted": true, "skill_path": path }))
+        }
+        "record_skill_feedback" => {
+            let store = open_store()?;
+            let skill_id = args
+                .get("skill_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing skill_id"))?;
+            let kind = field_str(&args, "kind")?;
+            let note = field_str(&args, "note")?;
+            let result = store.record_skill_feedback(skill_id, &kind, &note)?;
+            Ok(serde_json::to_value(result)?)
         }
         other => anyhow::bail!("unknown tool: {other}"),
     }

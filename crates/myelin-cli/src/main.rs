@@ -37,6 +37,15 @@ enum Command {
     Promote {
         candidate_id: i64,
     },
+    /// Record feedback on a promoted skill (correction appends into the
+    /// live SKILL.md; confirmation just logs).
+    Feedback {
+        skill_id: i64,
+        #[arg(long, value_parser = ["correction", "confirmation"])]
+        kind: String,
+        #[arg(long)]
+        note: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -52,6 +61,7 @@ fn main() -> Result<()> {
         Command::Queue => queue(),
         Command::Skills => skills(),
         Command::Promote { candidate_id } => promote(candidate_id),
+        Command::Feedback { skill_id, kind, note } => feedback(skill_id, kind, note),
     }
 }
 
@@ -104,6 +114,13 @@ fn promote(candidate_id: i64) -> Result<()> {
     let skills_dir = myelin_core::Paths::resolve().skills_dir();
     let path = store.promote_candidate(candidate_id, &skills_dir)?;
     println!("promoted -> {path}");
+    Ok(())
+}
+
+fn feedback(skill_id: i64, kind: String, note: String) -> Result<()> {
+    let store = open_store()?;
+    let result = store.record_skill_feedback(skill_id, &kind, &note)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
