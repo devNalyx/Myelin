@@ -25,7 +25,4 @@ clap = { version = "4", features = ["derive"] }
 directories = "5"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# Pinned to the 2.x line deliberately: 3.x reworked the Agent/timeout API
-# non-trivially. Defaults to rustls, so no system OpenSSL dependency.
-ureq = { version = "2", features = ["json"] }
 regex = "1"

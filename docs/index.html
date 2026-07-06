@@ -425,9 +425,9 @@
       <a class="btn btn-ghost" href="#install">Quick install</a>
     </div>
     <div class="stat-row">
-      <div class="stat"><div class="n">6</div><div class="l">MCP tools</div></div>
+      <div class="stat"><div class="n">8</div><div class="l">MCP tools</div></div>
       <div class="stat"><div class="n">2</div><div class="l">Promotion paths</div></div>
-      <div class="stat"><div class="n">27</div><div class="l">Tests passing</div></div>
+      <div class="stat"><div class="n">40</div><div class="l">Tests passing</div></div>
       <div class="stat"><div class="n">0</div><div class="l">Config required to start</div></div>
     </div>
   </section>
@@ -456,13 +456,13 @@
       </div>
       <div class="card">
         <div class="icon">⌁</div>
-        <h3>Embeddings, optional</h3>
-        <p>Token-overlap matching works with zero config. Point it at any OpenAI-compatible endpoint for cosine-similarity matching instead — off by default, and it degrades to token-overlap on any failure.</p>
+        <h3>Redacted before it's stored</h3>
+        <p>A broad, aggressive redaction pass runs ahead of anything derived from a session transcript — known secret formats, generic key/token assignments, high-entropy strings — before a byte of it is ever persisted.</p>
       </div>
       <div class="card">
         <div class="icon">◆</div>
-        <h3>Safe by default</h3>
-        <p>Remote embedding endpoints are blocked unless loopback/private or explicitly allowed. Nothing calls out anywhere unless you turn it on.</p>
+        <h3>No daemon-side LLM</h3>
+        <p>Session transcripts are staged by cheap, deterministic heuristics, not judged by a model running on its own. An actual agent still decides what's worth capturing.</p>
       </div>
       <div class="card">
         <div class="icon">⇄</div>
@@ -487,7 +487,7 @@
       <div class="card">
         <div class="icon">2</div>
         <h3>Warm up</h3>
-        <p>Similar observations accumulate reps in a queue, matched by token-overlap or embeddings.</p>
+        <p>Similar observations accumulate reps in a queue, matched by token-overlap similarity.</p>
       </div>
       <div class="card">
         <div class="icon">3</div>
@@ -505,7 +505,7 @@
   <section id="tools">
     <div class="section-head">
       <div class="kicker">What an agent can actually call</div>
-      <h2>6 MCP tools, grouped by what they do</h2>
+      <h2>8 MCP tools, grouped by what they do</h2>
       <p>Every tool is backed by the same SQLite store — no separate index to keep in sync.</p>
     </div>
     <div class="tool-groups">
@@ -545,6 +545,17 @@
           <div class="desc">Promoted skills with full provenance — reason, observation count, staleness.</div>
         </div>
       </div>
+      <div class="tool-group">
+        <div class="group-label">Review queue</div>
+        <div class="tool-row">
+          <div class="name">list_pending_review</div>
+          <div class="desc">Redacted excerpts auto-staged from session transcripts, awaiting a judgment call.</div>
+        </div>
+        <div class="tool-row">
+          <div class="name">dismiss_pending_review</div>
+          <div class="desc">Clear a staged item, whether or not it became an observation.</div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -572,11 +583,11 @@
     </div>
     <div class="specs">
       <div class="spec"><div class="k">Storage</div><div class="v">SQLite, WAL journal mode</div></div>
-      <div class="spec"><div class="k">Matching</div><div class="v">Jaccard token-overlap, or cosine similarity if embeddings enabled</div></div>
+      <div class="spec"><div class="k">Matching</div><div class="v">Jaccard token-overlap similarity</div></div>
       <div class="spec"><div class="k">Promotion</div><div class="v">Reps threshold, or explicit high-stakes signal</div></div>
       <div class="spec"><div class="k">Feedback</div><div class="v">Corrections appended live into the promoted file</div></div>
       <div class="spec"><div class="k">Atrophy</div><div class="v">Informational stale flag, judged by last-invoked</div></div>
-      <div class="spec"><div class="k">Tests</div><div class="v">27 passing — unit + real MCP stdio protocol</div></div>
+      <div class="spec"><div class="k">Tests</div><div class="v">40 passing — unit + real MCP stdio protocol</div></div>
     </div>
   </section>
 
@@ -591,15 +602,13 @@
         <li><span class="mark">✓</span> Observation → warmup queue → promotion loop</li>
         <li><span class="mark">✓</span> Living <code>SKILL.md</code> — corrections mutate it directly</li>
         <li><span class="mark">✓</span> Usage tracking + informational atrophy flag</li>
-        <li><span class="mark">✓</span> Optional embeddings-based similarity, policy-gated</li>
+        <li><span class="mark">✓</span> Automatic session ingestion — <code>SessionEnd</code> hook, redaction, heuristic staging, agent review</li>
         <li><span class="mark">✓</span> CI (fmt/clippy/test) + MCP protocol integration tests</li>
       </ul>
       <ul class="status-list pending">
-        <li><span class="mark">○</span> Automatic session-transcript ingestion via a <code>SessionEnd</code> hook</li>
-        <li><span class="mark">○</span> A redaction pass ahead of any transcript content</li>
         <li><span class="mark">○</span> Scoped-neighborhood graph visualizer</li>
-        <li><span class="mark">○</span> Re-embedding older candidates after enabling embeddings later</li>
         <li><span class="mark">○</span> Any action taken on a stale skill beyond the flag</li>
+        <li><span class="mark">○</span> Broader real-world validation of the ingestion heuristics — verified against one real session so far</li>
       </ul>
     </div>
   </section>

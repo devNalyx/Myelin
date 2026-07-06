@@ -1,11 +1,9 @@
-pub mod embeddings;
 pub mod redact;
 pub mod skillfile;
 pub mod staging;
 pub mod store;
 pub mod transcript;
 
-pub use embeddings::{cosine_similarity, EmbeddingsClient};
 pub use redact::redact;
 pub use staging::{stage_candidates, StagedCandidate};
 pub use store::{

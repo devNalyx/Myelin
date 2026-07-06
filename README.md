@@ -4,7 +4,7 @@
 
 Myelin — the layer that turns repeated practice into instinct, the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.
 
-**Status:** MVP, registered as a live user-scoped MCP server (`claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file → usage/atrophy tracking — works end-to-end, verified over the actual MCP stdio protocol, plus an optional embeddings-based similarity upgrade. Automatic session ingestion also exists now: a `SessionEnd` hook redacts and heuristically stages candidates from each session's transcript into a review queue — no daemon-side LLM judgment, a later live agent session still decides what's actually worth an observation. See §4/§5 for what's real vs. still sketch.
+**Status:** MVP, registered as a live user-scoped MCP server (`claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file → usage/atrophy tracking — works end-to-end, verified over the actual MCP stdio protocol. Automatic session ingestion also exists now: a `SessionEnd` hook redacts and heuristically stages candidates from each session's transcript into a review queue — no daemon-side LLM judgment, a later live agent session still decides what's actually worth an observation. Candidate matching is plain token-overlap (Jaccard) only — an embeddings-based upgrade was built, then deliberately decommissioned before any real evidence it was needed (see §7). See §4/§5 for what's real vs. still sketch.
 
 ---
 
@@ -20,7 +20,6 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 - SQLite + WAL + FTS5 for storage/search (once storage logic lands)
 - Config/TOML, systemd user unit, CLI, `.deb` packaging conventions
 - Export/import as a portable snapshot
-- An OpenAI-compatible embeddings client with an explicit policy gate (`is_loopback_or_private` check) — off by default, opt-in, and remote endpoints are blocked unless explicitly allowed
 - Warm/cold gating (judge staleness by last-used, not last-modified) — currently an informational flag on skills; a natural next step is acting on it (e.g. no longer surfacing a cold skill in search) rather than just flagging it
 - A scoped-neighborhood visualization pattern planned for browsing the learned graph — never the whole graph at once, always a bounded slice around whatever's being inspected
 
@@ -43,7 +42,6 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 - `skills` — slug, path to the written `SKILL.md`, `promoted_reason` (`reps`/`context_signal`/`manual`), observation count, provenance timestamp
 - `corrections` — skill_id, `kind` (`correction`/`confirmation`), note, timestamp; corrections also get appended live into the skill's actual `SKILL.md`
 - `skills.last_invoked_at` — set by `mark_skill_used`; `list_skills` derives a `stale` flag from it (falling back to `created_at` if a skill's never been marked used)
-- `skill_candidates.embedding` — JSON-encoded vector, populated only when embeddings are enabled and reachable; candidates without one always fall back to Jaccard for that comparison
 - `pending_reviews` — session_id, project, `heuristic_reason` (`multi-step-sequence`/`error-then-fix`/`correction-language`/`high-stakes-phrasing`), an already-redacted and bounded `excerpt`, `status` (`pending`/`dismissed`). This is the only table that ever holds anything derived from a raw transcript, and only ever the redacted excerpt — never the transcript itself
 
 **Sketch, not yet implemented:**
@@ -54,7 +52,7 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 
 **Implemented:**
 1. Capture happens two ways now: the calling agent reports a noteworthy procedure directly via `record_observation` (or `myelin observe`), **or** a `SessionEnd` hook automatically stages candidates from the session that just ended (see the ingestion sub-pipeline below). Either way, an agent still makes the final call on whether something becomes a real observation — nothing auto-promotes straight from a transcript.
-2. Matching against existing candidates: token-overlap (Jaccard) by default, or cosine similarity over embeddings if `[embeddings] enabled = true` and policy-allowed (loopback/private endpoints allowed by default, anything else needs `allow_remote = true`). A candidate created before embeddings were enabled, or a call that fails mid-flight, transparently falls back to Jaccard for that comparison rather than erroring — this is an enhancement, never load-bearing. Threshold tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values, and used as-is for both scoring methods even though cosine and Jaccard aren't guaranteed to mean the same thing at the same cutoff).
+2. Matching against existing candidates: token-overlap (Jaccard) similarity. Threshold tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values). An embeddings-based cosine-similarity upgrade was built and later decommissioned (see §7) before any real evidence Jaccard needed the help.
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
@@ -70,23 +68,22 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 
 **Still sketch, not yet implemented:**
 - The scoped-neighborhood graph visualizer, and any actual action taken on stale skills beyond the flag
-- Re-verifying the transcript parser against a real transcript (deliberately never done — see open risks)
-- Re-embedding existing candidates after embeddings are turned on later — only newly-created candidates get a vector; nothing backfills old ones
+- Broader verification of the transcript parser — it correctly parsed one real session (see §7), which is real signal but not broad coverage
 
 ## 6. Interop note: Open Knowledge Format (OKF)
 
 Google Cloud announced [OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) in June 2026 — a vendor-neutral spec for representing knowledge as one Markdown file per entity, YAML frontmatter with a required `type` field, relationships expressed as plain Markdown links. It's a near-exact match for the *hardened* tier of this graph (promoted skills, confirmed corrections).
 
-Not adopted yet — noted here as the likely export/interop format once there's something worth exporting, so a promoted skill can be portable to other OKF-reading tools, not just this one. It does not replace the working-memory layer (SQLite + embeddings) that decides what gets promoted in the first place.
+Not adopted yet — noted here as the likely export/interop format once there's something worth exporting, so a promoted skill can be portable to other OKF-reading tools, not just this one. It does not replace the working-memory layer (SQLite) that decides what gets promoted in the first place.
 
 ## 7. Open risks, unresolved
 
-- What "same procedure" means as a similarity metric — untested for both Jaccard and cosine, and the same `similarity_threshold` is reused for both despite no guarantee they're comparable at the same cutoff
+- What "same procedure" means as a similarity metric — untested, and the threshold (0.4) is a guess, not a measured value
 - Trigger-description precision on auto-drafted skills — false-positive firing risk grows with skill count
 - Decay/promotion/atrophy thresholds are guesses until there's real usage data
-- No embedding model has actually been exercised against this yet — the client is implemented and unit-tested, but never verified end-to-end against a live endpoint
-- **The transcript parser's schema was deliberately never verified against a real transcript.** Only top-level `type` field names were ever safely inspected (reading another session's actual content without explicit authorization wasn't something to do casually, even for development); the content-block shape it assumes is the standard, documented Anthropic Messages API format, but if Claude Code's real transcripts diverge from that in some way, the parser silently sees fewer turns than it should rather than erroring — it was built defensively for exactly this possibility, but "defensive" isn't the same as "confirmed correct." Tested only against hand-written synthetic fixtures.
-- The heuristic staging thresholds (4+ tool calls, specific regex phrasings) are first-guess pattern matching, not tuned against any real session data
+- **Embeddings-based similarity was built, then decommissioned.** An optional cosine-similarity upgrade (OpenAI-compatible endpoint, policy-gated, off by default) was added, then removed before any real observation ever needed it — with exactly one real observation in the system at the time, there was no evidence Jaccard was insufficient, and the feature had already accumulated real surface area (a network dependency, an unverified-against-any-live-endpoint code path) ahead of that evidence. Consistent with this project's own "observe before you build" principle applied retroactively rather than followed the first time.
+- **The transcript parser's schema was mostly built without verification, and has now been checked against exactly one real transcript.** Only top-level `type` field names were ever safely inspected before that (reading another session's actual content without explicit authorization wasn't something to do casually, even for development); the content-block shape it assumes is the standard, documented Anthropic Messages API format. It correctly parsed a real 454-tool-call session on the first real run — genuine signal, but one session isn't broad coverage, and a real bug was found in the same run (see below), so "worked once" isn't "confirmed correct" either.
+- The heuristic staging thresholds are first-guess pattern matching. One (`100+` in high-stakes-phrasing) was already found broken against real text — a shared trailing `\b` could never match `+` followed by a space — and fixed; the rest (4+ tool calls, the other regexes) are still unverified against real sessions beyond that one run.
 - Redaction is broad/aggressive by design but not comprehensive PII scrubbing — a secret in a format it doesn't recognize gets through
 
 ## 8. Current layout
@@ -162,16 +159,8 @@ similarity_threshold = 0.4  # Jaccard token-overlap threshold, 0.0-1.0
 
 [atrophy]
 stale_after_secs = 2592000  # 30 days; flags a skill `stale` in list_skills, doesn't act on it
-
-[embeddings]
-enabled = false              # off by default; structural matching (Jaccard) works with zero config
-endpoint = "http://localhost:11434/v1"   # any OpenAI-compatible /v1/embeddings server
-model = "nomic-embed-text"
-api_key = ""                 # blank for local servers that don't need one
-timeout_secs = 30
-allow_remote = false          # required if endpoint isn't loopback/private
 ```
 
 ## 10. Tests
 
-`cargo test --workspace` — 49 tests total: 6 unit tests in `myelin-core` (embeddings policy gating: loopback/private detection, enabled/disabled/remote-blocked states), 39 in `myelin-index` (tokenize/jaccard/cosine, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, staleness/mark-used, an unreachable embeddings endpoint falling back to Jaccard rather than erroring, redaction per secret category, transcript parsing against hand-written synthetic fixtures, staging heuristics, and the pending-review lifecycle), and 4 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, the pending-review queue round-trip, and that bad input returns JSON-RPC errors rather than crashing). The `ingest-session` → redact → stage → review path was also verified manually end to end against a synthetic transcript (a real secret embedded in it came out redacted in the staged excerpt).
+`cargo test --workspace` — 40 tests total: 36 in `myelin-index` (tokenize/jaccard, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, staleness/mark-used, redaction per secret category, transcript parsing against hand-written synthetic fixtures, staging heuristics including the `100+` regression, and the pending-review lifecycle), and 4 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, the pending-review queue round-trip, and that bad input returns JSON-RPC errors rather than crashing). `myelin-core` currently has no tests of its own — its only tested logic (embeddings policy gating) was removed along with the feature. The `ingest-session` → redact → stage → review path has also been verified twice manually end to end: once against a synthetic transcript with an embedded fake secret (came out redacted), and once for real against this project's own development session (correctly parsed 454 tool calls, staged 2 genuine candidates, and surfaced the `100+` regex bug that got fixed above).

@@ -1,6 +1,5 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::path::Path;
 
 /// Ingestion sources and the capture-worthiness filter land here once the
@@ -11,8 +10,6 @@ pub struct Config {
     pub promotion: PromotionConfig,
     #[serde(default)]
     pub atrophy: AtrophyConfig,
-    #[serde(default)]
-    pub embeddings: EmbeddingsConfig,
 }
 
 /// Tunable knobs for the warmup-queue -> skill promotion logic. Defaults
@@ -68,52 +65,6 @@ impl Default for AtrophyConfig {
     }
 }
 
-/// Optional upgrade over token-overlap similarity matching. Off by
-/// default; ported near-verbatim from NexusContext's identical
-/// `EmbeddingsConfig`/policy, since the "optional, policy-gated
-/// OpenAI-compatible endpoint" concern is exactly the same regardless of
-/// what's being embedded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingsConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub endpoint: Option<String>,
-    pub model: Option<String>,
-    pub api_key: Option<String>,
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
-    #[serde(default)]
-    pub allow_remote: bool,
-}
-
-fn default_timeout_secs() -> u64 {
-    30
-}
-
-impl Default for EmbeddingsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            endpoint: None,
-            model: None,
-            api_key: None,
-            timeout_secs: default_timeout_secs(),
-            allow_remote: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmbeddingsPolicy {
-    /// Endpoint or model (or both) aren't filled in — nothing to turn on.
-    NotConfigured,
-    /// Endpoint and model are filled in, but the feature switch is off.
-    Disabled,
-    Allowed,
-    /// Configured and enabled, but points off-box and `allow_remote` isn't set.
-    RemoteBlocked,
-}
-
 impl Config {
     /// Missing config file is not an error — defaults apply.
     pub fn load(path: &Path) -> Result<Self> {
@@ -141,147 +92,5 @@ impl Config {
             path: path.to_path_buf(),
             source,
         })
-    }
-
-    pub fn embeddings_policy(&self) -> EmbeddingsPolicy {
-        let (Some(endpoint), Some(model)) = (&self.embeddings.endpoint, &self.embeddings.model)
-        else {
-            return EmbeddingsPolicy::NotConfigured;
-        };
-        if endpoint.trim().is_empty() || model.trim().is_empty() {
-            return EmbeddingsPolicy::NotConfigured;
-        }
-        if !self.embeddings.enabled {
-            return EmbeddingsPolicy::Disabled;
-        }
-        if self.embeddings.allow_remote || is_loopback_or_private(endpoint) {
-            EmbeddingsPolicy::Allowed
-        } else {
-            EmbeddingsPolicy::RemoteBlocked
-        }
-    }
-}
-
-fn extract_host(endpoint: &str) -> Option<&str> {
-    let without_scheme = endpoint.split("://").nth(1).unwrap_or(endpoint);
-    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    (!host.is_empty()).then_some(host)
-}
-
-fn is_loopback_or_private(endpoint: &str) -> bool {
-    let Some(host) = extract_host(endpoint) else {
-        return false;
-    };
-    if host == "localhost" {
-        return true;
-    }
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private(),
-        Ok(IpAddr::V6(v6)) => v6.is_loopback(),
-        Err(_) => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loopback_and_private_hosts_are_recognized() {
-        assert!(is_loopback_or_private("http://localhost:11434/v1"));
-        assert!(is_loopback_or_private("http://127.0.0.1:11434/v1"));
-        assert!(is_loopback_or_private("http://192.168.1.50:11434/v1"));
-        assert!(is_loopback_or_private("http://10.0.0.5:11434/v1"));
-    }
-
-    #[test]
-    fn public_hosts_are_not_loopback_or_private() {
-        assert!(!is_loopback_or_private("https://api.example.com/v1"));
-        assert!(!is_loopback_or_private("http://8.8.8.8/v1"));
-    }
-
-    fn config_with_embeddings(
-        endpoint: Option<&str>,
-        model: Option<&str>,
-        enabled: bool,
-        allow_remote: bool,
-    ) -> Config {
-        Config {
-            embeddings: EmbeddingsConfig {
-                enabled,
-                endpoint: endpoint.map(str::to_string),
-                model: model.map(str::to_string),
-                api_key: None,
-                timeout_secs: default_timeout_secs(),
-                allow_remote,
-            },
-            ..Config::default()
-        }
-    }
-
-    #[test]
-    fn policy_is_not_configured_without_endpoint_or_model() {
-        assert_eq!(
-            config_with_embeddings(None, None, true, false).embeddings_policy(),
-            EmbeddingsPolicy::NotConfigured
-        );
-        assert_eq!(
-            config_with_embeddings(Some("http://localhost:11434/v1"), None, true, false)
-                .embeddings_policy(),
-            EmbeddingsPolicy::NotConfigured
-        );
-    }
-
-    #[test]
-    fn policy_is_disabled_when_configured_but_not_enabled() {
-        assert_eq!(
-            config_with_embeddings(
-                Some("http://localhost:11434/v1"),
-                Some("nomic-embed-text"),
-                false,
-                false
-            )
-            .embeddings_policy(),
-            EmbeddingsPolicy::Disabled
-        );
-    }
-
-    #[test]
-    fn policy_is_allowed_for_enabled_loopback_endpoint() {
-        assert_eq!(
-            config_with_embeddings(
-                Some("http://localhost:11434/v1"),
-                Some("nomic-embed-text"),
-                true,
-                false
-            )
-            .embeddings_policy(),
-            EmbeddingsPolicy::Allowed
-        );
-    }
-
-    #[test]
-    fn policy_is_remote_blocked_without_allow_remote() {
-        assert_eq!(
-            config_with_embeddings(
-                Some("http://100.120.200.220:11434/v1"),
-                Some("nomic-embed-text"),
-                true,
-                false
-            )
-            .embeddings_policy(),
-            EmbeddingsPolicy::RemoteBlocked
-        );
-        assert_eq!(
-            config_with_embeddings(
-                Some("http://100.120.200.220:11434/v1"),
-                Some("nomic-embed-text"),
-                true,
-                true
-            )
-            .embeddings_policy(),
-            EmbeddingsPolicy::Allowed
-        );
     }
 }
