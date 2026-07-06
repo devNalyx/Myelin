@@ -20,14 +20,25 @@ pub struct StoreConfig {
     /// long is flagged `stale` in `list_skills` — informational only, not
     /// automatically deleted or unregistered.
     pub stale_after_secs: i64,
+    /// When `Some`, candidate matching uses cosine similarity over
+    /// embeddings instead of token-overlap Jaccard. `None` (the default)
+    /// is the zero-config path — nothing about matching changes unless a
+    /// caller explicitly builds a client from an `Allowed`
+    /// `EmbeddingsPolicy`.
+    pub embeddings: Option<crate::embeddings::EmbeddingsClient>,
 }
 
+// Deliberately not `#[derive(Default)]`: i64/f64's own defaults are 0 and
+// 0.0, which would silently make similarity_threshold 0.0 (everything
+// "matches") and promotion_reps 0 (everything promotes instantly) - a
+// correctness bug, not a style choice. Real sensible defaults, spelled out.
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
             promotion_reps: DEFAULT_PROMOTION_REPS,
             similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
             stale_after_secs: DEFAULT_STALE_AFTER_SECS,
+            embeddings: None,
         }
     }
 }
@@ -40,7 +51,8 @@ CREATE TABLE IF NOT EXISTS skill_candidates (
     rep_count INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'warming',
     first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL
+    last_seen TEXT NOT NULL,
+    embedding TEXT
 );
 
 CREATE TABLE IF NOT EXISTS observations (
@@ -80,6 +92,7 @@ pub struct Store {
     promotion_reps: i64,
     similarity_threshold: f64,
     stale_after_secs: i64,
+    embeddings: Option<crate::embeddings::EmbeddingsClient>,
 }
 
 pub struct NewObservation {
@@ -189,11 +202,13 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "skills", "last_invoked_at", "TEXT")?;
+        ensure_column(&conn, "skill_candidates", "embedding", "TEXT")?;
         Ok(Self {
             conn,
             promotion_reps: config.promotion_reps,
             similarity_threshold: config.similarity_threshold,
             stale_after_secs: config.stale_after_secs,
+            embeddings: config.embeddings,
         })
     }
 
@@ -205,30 +220,52 @@ impl Store {
         input: NewObservation,
         skills_dir: &Path,
     ) -> anyhow::Result<RecordResult> {
-        let tokens = tokenize(&format!("{} {}", input.title, input.summary));
+        let text = format!("{} {}", input.title, input.summary);
+        let tokens = tokenize(&text);
         let now = Utc::now().to_rfc3339();
+
+        // Embedding is best-effort: a down/misconfigured endpoint falls
+        // back to Jaccard for this observation rather than failing it -
+        // this is an enhancement, never load-bearing (see EmbeddingsClient).
+        let new_embedding: Option<Vec<f32>> = self
+            .embeddings
+            .as_ref()
+            .and_then(|client| client.embed(&text).ok());
 
         let mut best: Option<(i64, f64, i64, String)> = None;
         {
             let mut stmt = self
                 .conn
-                .prepare("SELECT id, key, rep_count, status FROM skill_candidates")?;
+                .prepare("SELECT id, key, embedding, rep_count, status FROM skill_candidates")?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })?;
             for row in rows {
-                let (id, key, rep_count, status) = row?;
-                let cand_tokens: HashSet<String> = key
-                    .split(' ')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-                let score = jaccard(&tokens, &cand_tokens);
+                let (id, key, embedding_json, rep_count, status) = row?;
+                let score = match (&new_embedding, embedding_json.as_deref()) {
+                    (Some(new_vec), Some(json)) => serde_json::from_str::<Vec<f32>>(json)
+                        .map(|cand_vec| crate::embeddings::cosine_similarity(new_vec, &cand_vec))
+                        .unwrap_or(0.0),
+                    _ => {
+                        // No embedding on one side (client disabled, call
+                        // failed this time, or candidate predates
+                        // embeddings being enabled) - fall back to
+                        // token-overlap for this comparison specifically,
+                        // not just globally.
+                        let cand_tokens: HashSet<String> = key
+                            .split(' ')
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                            .collect();
+                        jaccard(&tokens, &cand_tokens)
+                    }
+                };
                 if score >= self.similarity_threshold
                     && best.as_ref().map(|b| score > b.1).unwrap_or(true)
                 {
@@ -247,10 +284,14 @@ impl Store {
             let mut sorted_tokens: Vec<_> = tokens.iter().cloned().collect();
             sorted_tokens.sort();
             let key = sorted_tokens.join(" ");
+            let embedding_json = new_embedding
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
             self.conn.execute(
-                "INSERT INTO skill_candidates (key, title, rep_count, status, first_seen, last_seen)
-                 VALUES (?1, ?2, 1, 'warming', ?3, ?3)",
-                params![key, input.title, now],
+                "INSERT INTO skill_candidates (key, title, rep_count, status, first_seen, last_seen, embedding)
+                 VALUES (?1, ?2, 1, 'warming', ?3, ?3, ?4)",
+                params![key, input.title, now, embedding_json],
             )?;
             (self.conn.last_insert_rowid(), 1, "warming".to_string())
         };
@@ -763,5 +804,41 @@ mod tests {
         let (store, _skills_dir) = open_test_store("mark-used-unknown");
         let err = store.mark_skill_used(999_999).unwrap_err();
         assert!(err.to_string().contains("no such skill"));
+    }
+
+    #[test]
+    fn an_unreachable_embeddings_endpoint_falls_back_to_jaccard_not_an_error() {
+        let (db_path, skills_dir) = scratch_dirs("embeddings-unreachable");
+        // Port 1 is a privileged, essentially-never-listening port - this
+        // client will fail every call, which is exactly what's being
+        // tested: record_observation must not propagate that failure.
+        let client = crate::embeddings::EmbeddingsClient::new(
+            "http://127.0.0.1:1".to_string(),
+            "test-model".to_string(),
+            None,
+            1,
+        );
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                embeddings: Some(client),
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+
+        let title = "apply db migration hotfix";
+        let summary = "run migrate.sh then restart service";
+        let first = store
+            .record_observation(obs(title, summary), &skills_dir)
+            .unwrap();
+        let second = store
+            .record_observation(obs(title, summary), &skills_dir)
+            .unwrap();
+
+        // Still matched via the Jaccard fallback despite the embeddings
+        // client being unusable end to end.
+        assert_eq!(second.candidate_id, first.candidate_id);
+        assert_eq!(second.rep_count, 2);
     }
 }

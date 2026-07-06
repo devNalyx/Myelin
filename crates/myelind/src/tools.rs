@@ -1,5 +1,20 @@
-use myelin_index::{NewObservation, Store, StoreConfig};
+use myelin_index::{EmbeddingsClient, NewObservation, Store, StoreConfig};
 use serde_json::{json, Value};
+
+/// `None` unless embeddings are explicitly enabled *and* policy-allowed
+/// (loopback/private endpoint, or `allow_remote = true`) - mirrors
+/// NexusContext's exact embeddings policy gate.
+fn embeddings_client(config: &myelin_core::Config) -> Option<EmbeddingsClient> {
+    if config.embeddings_policy() != myelin_core::EmbeddingsPolicy::Allowed {
+        return None;
+    }
+    Some(EmbeddingsClient::new(
+        config.embeddings.endpoint.clone()?,
+        config.embeddings.model.clone()?,
+        config.embeddings.api_key.clone(),
+        config.embeddings.timeout_secs,
+    ))
+}
 
 fn open_store() -> anyhow::Result<Store> {
     let paths = myelin_core::Paths::resolve();
@@ -10,6 +25,7 @@ fn open_store() -> anyhow::Result<Store> {
             promotion_reps: config.promotion.reps,
             similarity_threshold: config.promotion.similarity_threshold,
             stale_after_secs: config.atrophy.stale_after_secs,
+            embeddings: embeddings_client(&config),
         },
     )
 }

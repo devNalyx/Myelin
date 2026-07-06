@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use myelin_index::{NewObservation, Store, StoreConfig};
+use myelin_index::{EmbeddingsClient, NewObservation, Store, StoreConfig};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
@@ -70,6 +70,18 @@ fn main() -> Result<()> {
     }
 }
 
+fn embeddings_client(config: &myelin_core::Config) -> Option<EmbeddingsClient> {
+    if config.embeddings_policy() != myelin_core::EmbeddingsPolicy::Allowed {
+        return None;
+    }
+    Some(EmbeddingsClient::new(
+        config.embeddings.endpoint.clone()?,
+        config.embeddings.model.clone()?,
+        config.embeddings.api_key.clone(),
+        config.embeddings.timeout_secs,
+    ))
+}
+
 fn open_store() -> Result<Store> {
     let paths = myelin_core::Paths::resolve();
     let config = myelin_core::Config::load(&paths.config_file())?;
@@ -79,6 +91,7 @@ fn open_store() -> Result<Store> {
             promotion_reps: config.promotion.reps,
             similarity_threshold: config.promotion.similarity_threshold,
             stale_after_secs: config.atrophy.stale_after_secs,
+            embeddings: embeddings_client(&config),
         },
     )
 }
