@@ -12,19 +12,19 @@ Myelin — the layer that turns repeated practice into instinct, the same way th
 
 A local daemon that watches your agentic coding sessions, mines them for recurring or high-stakes procedures, and — once a pattern earns it — crystallizes it into a real [Claude Code Skill](https://docs.claude.com/) (`SKILL.md`) that keeps mutating from how it's actually used afterward.
 
-This is not "index my codebase" (that's [NexusContext](https://github.com/devNalyx/NexusContext), the sibling project this one's daemon/MCP/storage skeleton is forked from in spirit). It's "notice what I keep doing, and eventually stop making me re-explain it."
+It isn't a codebase indexer. It's about noticing what you keep doing, not what your code contains — the goal is to eventually stop making you re-explain the same fix, convention, or workaround.
 
-## 2. What's reused from NexusContext's architecture
+## 2. Architecture
 
 - Daemon + MCP (stdio) + control-socket (Unix) split
 - SQLite + WAL + FTS5 for storage/search (once storage logic lands)
 - Config/TOML, systemd user unit, CLI, `.deb` packaging conventions
 - Export/import as a portable snapshot
-- The OpenAI-compatible embeddings client, policy gate, and `is_loopback_or_private` check — ported near-verbatim from NexusContext's real, working implementation, same off-by-default/policy-gated posture
-- The warm/cold gating pattern (judge staleness by last-used, not last-modified) — implemented for skill atrophy as an informational flag; NexusContext also *acts* on it (stops watching cold projects), which this doesn't do yet
-- The scoped-neighborhood + Graphviz visualization pattern (never render the whole graph, only a bounded slice) — reused for browsing the learned graph
+- An OpenAI-compatible embeddings client with an explicit policy gate (`is_loopback_or_private` check) — off by default, opt-in, and remote endpoints are blocked unless explicitly allowed
+- Warm/cold gating (judge staleness by last-used, not last-modified) — currently an informational flag on skills; a natural next step is acting on it (e.g. no longer surfacing a cold skill in search) rather than just flagging it
+- A scoped-neighborhood visualization pattern planned for browsing the learned graph — never the whole graph at once, always a bounded slice around whatever's being inspected
 
-## 3. What's new, not reused
+## 3. What makes this different from a typical indexer
 
 - **Ingestion source:** session transcripts (Claude Code `*.jsonl`), not source files — no tree-sitter, no AST
 - **Extraction:** an LLM normalization pass, not a deterministic parser
@@ -53,7 +53,7 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 
 **Implemented:**
 1. The calling agent reports a noteworthy procedure via the `record_observation` MCP tool (or `myelin observe` for debugging) — this **is** the extraction step for now: no transcript mining, no separate LLM call, no redaction subsystem, because the reporting agent already decides what's worth saying and never passes along anything it shouldn't.
-2. Matching against existing candidates: token-overlap (Jaccard) by default, or cosine similarity over embeddings if `[embeddings] enabled = true` and policy-allowed (mirrors NexusContext's exact gate: loopback/private endpoints allowed by default, anything else needs `allow_remote = true`). A candidate created before embeddings were enabled, or a call that fails mid-flight, transparently falls back to Jaccard for that comparison rather than erroring — this is an enhancement, never load-bearing. Threshold tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values, and used as-is for both scoring methods even though cosine and Jaccard aren't guaranteed to mean the same thing at the same cutoff).
+2. Matching against existing candidates: token-overlap (Jaccard) by default, or cosine similarity over embeddings if `[embeddings] enabled = true` and policy-allowed (loopback/private endpoints allowed by default, anything else needs `allow_remote = true`). A candidate created before embeddings were enabled, or a call that fails mid-flight, transparently falls back to Jaccard for that comparison rather than erroring — this is an enhancement, never load-bearing. Threshold tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values, and used as-is for both scoring methods even though cosine and Jaccard aren't guaranteed to mean the same thing at the same cutoff).
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
@@ -67,7 +67,7 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 
 ## 6. Interop note: Open Knowledge Format (OKF)
 
-Google Cloud announced [OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) in June 2026 — a vendor-neutral spec for representing knowledge as one Markdown file per entity, YAML frontmatter with a required `type` field, relationships expressed as plain Markdown links. It's a near-exact match for the *hardened* tier of this graph (promoted skills, confirmed corrections), and NexusContext's own Phase 9 (Obsidian-vault export) was accidentally a preview of the same idea before OKF existed.
+Google Cloud announced [OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) in June 2026 — a vendor-neutral spec for representing knowledge as one Markdown file per entity, YAML frontmatter with a required `type` field, relationships expressed as plain Markdown links. It's a near-exact match for the *hardened* tier of this graph (promoted skills, confirmed corrections).
 
 Not adopted yet — noted here as the likely export/interop format once there's something worth exporting, so a promoted skill can be portable to other OKF-reading tools, not just this one. It does not replace the working-memory layer (SQLite + embeddings) that decides what gets promoted in the first place.
 
@@ -75,9 +75,9 @@ Not adopted yet — noted here as the likely export/interop format once there's 
 
 - What "same procedure" means as a similarity metric — untested for both Jaccard and cosine, and the same `similarity_threshold` is reused for both despite no guarantee they're comparable at the same cutoff
 - Trigger-description precision on auto-drafted skills — false-positive firing risk grows with skill count
-- Redaction is a real, undesigned subsystem — the single biggest departure from NexusContext's threat model
+- Redaction is a real, undesigned subsystem — the biggest open gap before any automatic transcript ingestion is safe to turn on
 - Decay/promotion/atrophy thresholds are guesses until there's real usage data
-- No embedding model has actually been exercised against this yet (unlike NexusContext, which verified against a real remote Ollama endpoint) — the client is a straight port, not independently proven here
+- No embedding model has actually been exercised against this yet — the client is implemented and unit-tested, but never verified end-to-end against a live endpoint
 
 ## 8. Current layout
 
@@ -138,4 +138,4 @@ allow_remote = false          # required if endpoint isn't loopback/private
 
 ## 10. Tests
 
-`cargo test --workspace` — 27 tests total: 6 unit tests in `myelin-core` (embeddings policy gating, ported with NexusContext's own test cases), 18 in `myelin-index` (tokenize/jaccard/cosine, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, staleness/mark-used, and an unreachable embeddings endpoint falling back to Jaccard rather than erroring), and 3 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, and that bad input returns JSON-RPC errors rather than crashing).
+`cargo test --workspace` — 27 tests total: 6 unit tests in `myelin-core` (embeddings policy gating: loopback/private detection, enabled/disabled/remote-blocked states), 18 in `myelin-index` (tokenize/jaccard/cosine, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, staleness/mark-used, and an unreachable embeddings endpoint falling back to Jaccard rather than erroring), and 3 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, and that bad input returns JSON-RPC errors rather than crashing).
