@@ -91,6 +91,20 @@ pub fn tool_definitions() -> Value {
                 "properties": { "skill_id": { "type": "integer", "description": "From list_skills." } },
                 "required": ["skill_id"]
             }
+        },
+        {
+            "name": "list_pending_review",
+            "description": "List redacted, heuristically-flagged excerpts staged automatically from past session transcripts (via a SessionEnd hook) - candidates that MIGHT be worth an observation, not yet judged by any agent. Review each one: if it's genuinely worth capturing, call record_observation yourself based on it, then dismiss_pending_review it. If it's not worth it, just dismiss it.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "dismiss_pending_review",
+            "description": "Clear a staged item from the pending-review queue, whether or not you turned it into an observation. Keeps the queue from accumulating things already handled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "integer", "description": "From list_pending_review." } },
+                "required": ["id"]
+            }
         }
     ])
 }
@@ -163,6 +177,19 @@ pub fn call(params: Value) -> anyhow::Result<Value> {
                 .ok_or_else(|| anyhow::anyhow!("missing skill_id"))?;
             store.mark_skill_used(skill_id)?;
             Ok(json!({ "marked_used": true }))
+        }
+        "list_pending_review" => {
+            let store = open_store()?;
+            Ok(json!({ "pending": store.list_pending_review()? }))
+        }
+        "dismiss_pending_review" => {
+            let store = open_store()?;
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing id"))?;
+            store.dismiss_pending_review(id)?;
+            Ok(json!({ "dismissed": true }))
         }
         other => anyhow::bail!("unknown tool: {other}"),
     }

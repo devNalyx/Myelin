@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS corrections (
     kind TEXT NOT NULL,
     note TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    project TEXT,
+    heuristic_reason TEXT NOT NULL,
+    excerpt TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+);
 ";
 
 pub struct Store {
@@ -144,6 +154,16 @@ pub struct FeedbackResult {
     pub skill_id: i64,
     pub correction_count: i64,
     pub confirmation_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PendingReviewView {
+    pub id: i64,
+    pub created_at: String,
+    pub session_id: String,
+    pub project: Option<String>,
+    pub heuristic_reason: String,
+    pub excerpt: String,
 }
 
 fn tokenize(text: &str) -> HashSet<String> {
@@ -518,6 +538,58 @@ impl Store {
             confirmation_count,
         })
     }
+
+    /// Stages a heuristic-flagged, already-redacted excerpt from
+    /// `myelin ingest-session` for later review by a live agent session -
+    /// nothing here is treated as confirmed evidence until a caller
+    /// decides to call `record_observation` off the back of it.
+    pub fn stage_pending_review(
+        &self,
+        session_id: &str,
+        project: Option<&str>,
+        heuristic_reason: &str,
+        excerpt: &str,
+    ) -> anyhow::Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO pending_reviews (created_at, session_id, project, heuristic_reason, excerpt, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+            params![now, session_id, project, heuristic_reason, excerpt],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn list_pending_review(&self) -> anyhow::Result<Vec<PendingReviewView>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, session_id, project, heuristic_reason, excerpt
+             FROM pending_reviews WHERE status = 'pending' ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(PendingReviewView {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                session_id: row.get(2)?,
+                project: row.get(3)?,
+                heuristic_reason: row.get(4)?,
+                excerpt: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Clears a staged item from the queue - used both when it wasn't
+    /// worth acting on and after successfully turning it into a real
+    /// observation, since this store doesn't track that link explicitly.
+    pub fn dismiss_pending_review(&self, id: i64) -> anyhow::Result<()> {
+        let rows = self.conn.execute(
+            "UPDATE pending_reviews SET status = 'dismissed' WHERE id = ?1 AND status = 'pending'",
+            params![id],
+        )?;
+        if rows == 0 {
+            anyhow::bail!("no pending review with id {id}");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -840,5 +912,41 @@ mod tests {
         // client being unusable end to end.
         assert_eq!(second.candidate_id, first.candidate_id);
         assert_eq!(second.rep_count, 2);
+    }
+
+    #[test]
+    fn pending_review_lifecycle() {
+        let (store, _skills_dir) = open_test_store("pending-review");
+
+        let id = store
+            .stage_pending_review(
+                "sess-1",
+                Some("myelin"),
+                "multi-step-sequence",
+                "redacted excerpt",
+            )
+            .unwrap();
+
+        let queue = store.list_pending_review().unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, id);
+        assert_eq!(queue[0].heuristic_reason, "multi-step-sequence");
+
+        store.dismiss_pending_review(id).unwrap();
+        assert!(store.list_pending_review().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dismissing_unknown_or_already_dismissed_review_errors() {
+        let (store, _skills_dir) = open_test_store("pending-review-errors");
+        let err = store.dismiss_pending_review(999_999).unwrap_err();
+        assert!(err.to_string().contains("no pending review"));
+
+        let id = store
+            .stage_pending_review("sess-1", None, "correction-language", "excerpt")
+            .unwrap();
+        store.dismiss_pending_review(id).unwrap();
+        let err = store.dismiss_pending_review(id).unwrap_err();
+        assert!(err.to_string().contains("no pending review"));
     }
 }

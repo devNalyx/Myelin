@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use myelin_index::{EmbeddingsClient, NewObservation, Store, StoreConfig};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 
 #[derive(Parser)]
@@ -46,6 +46,15 @@ enum Command {
     },
     /// Mark a skill as just used (what the `stale` flag is judged against).
     MarkUsed { skill_id: i64 },
+    /// Meant to be invoked by a Claude Code SessionEnd hook, fed the
+    /// hook's JSON payload on stdin. Redacts and heuristically stages
+    /// candidates from the session transcript for later review - never
+    /// fails loudly, since a hook has no decision control anyway.
+    IngestSession,
+    /// List staged candidates awaiting review (from ingest-session).
+    PendingReview,
+    /// Clear a staged candidate - whether or not it was acted on.
+    DismissReview { id: i64 },
 }
 
 fn main() -> Result<()> {
@@ -67,6 +76,9 @@ fn main() -> Result<()> {
             note,
         } => feedback(skill_id, kind, note),
         Command::MarkUsed { skill_id } => mark_used(skill_id),
+        Command::IngestSession => ingest_session(),
+        Command::PendingReview => pending_review(),
+        Command::DismissReview { id } => dismiss_review(id),
     }
 }
 
@@ -155,6 +167,66 @@ fn mark_used(skill_id: i64) -> Result<()> {
     let store = open_store()?;
     store.mark_skill_used(skill_id)?;
     println!("marked used");
+    Ok(())
+}
+
+/// Never returns an error - a SessionEnd hook has no decision control
+/// anyway (per Claude Code's docs), so failing loudly here would only
+/// ever surprise a user who isn't watching, never actually block or fix
+/// anything. Best-effort at every step; silently does nothing on any
+/// unexpected shape.
+fn ingest_session() -> Result<()> {
+    let mut input = String::new();
+    if std::io::stdin().read_to_string(&mut input).is_err() {
+        return Ok(());
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&input) else {
+        return Ok(());
+    };
+    let Some(transcript_path) = payload.get("transcript_path").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let session_id = payload
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let project = payload.get("cwd").and_then(|v| v.as_str());
+
+    let Ok(turns) = myelin_index::parse_transcript(std::path::Path::new(transcript_path)) else {
+        return Ok(());
+    };
+    let candidates = myelin_index::stage_candidates(&turns);
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    let Ok(store) = open_store() else {
+        return Ok(());
+    };
+    for candidate in candidates {
+        let _ = store.stage_pending_review(
+            session_id,
+            project,
+            &candidate.heuristic_reason,
+            &candidate.excerpt,
+        );
+    }
+    Ok(())
+}
+
+fn pending_review() -> Result<()> {
+    let store = open_store()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&store.list_pending_review()?)?
+    );
+    Ok(())
+}
+
+fn dismiss_review(id: i64) -> Result<()> {
+    let store = open_store()?;
+    store.dismiss_pending_review(id)?;
+    println!("dismissed");
     Ok(())
 }
 

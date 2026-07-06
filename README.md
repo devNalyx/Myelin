@@ -4,7 +4,7 @@
 
 Myelin — the layer that turns repeated practice into instinct, the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.
 
-**Status:** MVP, registered as a live user-scoped MCP server (`claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file → usage/atrophy tracking — works end-to-end, verified over the actual MCP stdio protocol, plus an optional embeddings-based similarity upgrade. What's *not* built yet: automatic transcript ingestion and redaction — see §4/§5 for what's real vs. still sketch.
+**Status:** MVP, registered as a live user-scoped MCP server (`claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file → usage/atrophy tracking — works end-to-end, verified over the actual MCP stdio protocol, plus an optional embeddings-based similarity upgrade. Automatic session ingestion also exists now: a `SessionEnd` hook redacts and heuristically stages candidates from each session's transcript into a review queue — no daemon-side LLM judgment, a later live agent session still decides what's actually worth an observation. See §4/§5 for what's real vs. still sketch.
 
 ---
 
@@ -27,13 +27,13 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 ## 3. What makes this different from a typical indexer
 
 - **Ingestion source:** session transcripts (Claude Code `*.jsonl`), not source files — no tree-sitter, no AST
-- **Extraction:** an LLM normalization pass, not a deterministic parser
+- **Extraction is two-tiered, not one LLM call:** cheap, deterministic heuristics (pattern-matching over tool sequences and phrasing, not an LLM) decide what's worth *surfacing*; an actual agent, later, still decides what's worth *capturing*. No daemon-side model ever judges content on its own.
 - **A capture-worthiness pre-filter** — most tool calls are baseline agent capability, not a skill, regardless of how often they recur
 - **Two independent promotion paths**, not one:
   - *Retrospective* — a candidate procedure recurs enough times across sessions to earn promotion (the "reps" model)
-  - *Prospective* — an LLM judges, from context alone (a Jira ticket saying "roll this out across 100+ repos," your own stated scope), that a pattern is worth capturing off a single occurrence, because the reps are clearly coming
+  - *Prospective* — an agent judges, from context alone (a Jira ticket saying "roll this out across 100+ repos," your own stated scope), that a pattern is worth capturing off a single occurrence, because the reps are clearly coming
 - **Living skills** — a promoted `SKILL.md` keeps mutating from usage feedback (corrections, rejections) instead of being a static, one-shot artifact
-- **A redaction/privacy pass** before anything touches storage — transcripts can contain pasted secrets, credentials, PII; source code never raised this concern
+- **A redaction pass ahead of anything that touches storage** — broad and aggressive on purpose (known secret formats, generic `*_KEY=`/`*_SECRET=`-style assignments, high-entropy tokens, emails, IPs); not comprehensive PII scrubbing, but the highest-severity leak class is covered before a byte of transcript content is ever persisted
 
 ## 4. Data model
 
@@ -44,25 +44,33 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 - `corrections` — skill_id, `kind` (`correction`/`confirmation`), note, timestamp; corrections also get appended live into the skill's actual `SKILL.md`
 - `skills.last_invoked_at` — set by `mark_skill_used`; `list_skills` derives a `stale` flag from it (falling back to `created_at` if a skill's never been marked used)
 - `skill_candidates.embedding` — JSON-encoded vector, populated only when embeddings are enabled and reachable; candidates without one always fall back to Jaccard for that comparison
+- `pending_reviews` — session_id, project, `heuristic_reason` (`multi-step-sequence`/`error-then-fix`/`correction-language`/`high-stakes-phrasing`), an already-redacted and bounded `excerpt`, `status` (`pending`/`dismissed`). This is the only table that ever holds anything derived from a raw transcript, and only ever the redacted excerpt — never the transcript itself
 
 **Sketch, not yet implemented:**
-- `Session` node (a source transcript) — there's no transcript ingestion yet, so observations are reported directly by the calling agent instead of mined from a `Session`
+- A proper `Session` node with real structure — `pending_reviews` covers the practical need (surface candidates for review) without a full session/observation graph relationship
 - `SUPERSEDES` edges — no skill versioning yet, a correction appends to the file rather than creating a new version
 
 ## 5. Pipeline
 
 **Implemented:**
-1. The calling agent reports a noteworthy procedure via the `record_observation` MCP tool (or `myelin observe` for debugging) — this **is** the extraction step for now: no transcript mining, no separate LLM call, no redaction subsystem, because the reporting agent already decides what's worth saying and never passes along anything it shouldn't.
+1. Capture happens two ways now: the calling agent reports a noteworthy procedure directly via `record_observation` (or `myelin observe`), **or** a `SessionEnd` hook automatically stages candidates from the session that just ended (see the ingestion sub-pipeline below). Either way, an agent still makes the final call on whether something becomes a real observation — nothing auto-promotes straight from a transcript.
 2. Matching against existing candidates: token-overlap (Jaccard) by default, or cosine similarity over embeddings if `[embeddings] enabled = true` and policy-allowed (loopback/private endpoints allowed by default, anything else needs `allow_remote = true`). A candidate created before embeddings were enabled, or a call that fails mid-flight, transparently falls back to Jaccard for that comparison rather than erroring — this is an enhancement, never load-bearing. Threshold tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values, and used as-is for both scoring methods even though cosine and Jaccard aren't guaranteed to mean the same thing at the same cutoff).
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
 6. `mark_skill_used` (or `myelin mark-used`) records that a skill was actually invoked, independent of feedback. `list_skills` flags a skill `stale` once `[atrophy] stale_after_secs` (default 30 days) has passed since its last use (or since promotion, if it's never been used) — informational only, nothing deletes or unregisters a stale skill automatically.
 
+**Ingestion sub-pipeline (implemented):**
+1. A `SessionEnd` hook (`matcher: "*"`, every reason) runs `myelin ingest-session`, fed the hook's JSON payload (`session_id`, `transcript_path`, `cwd`) on stdin.
+2. The transcript is parsed into turns (`crates/myelin-index/src/transcript.rs`) — defensively, since the exact schema was never verified against real content (see open risks).
+3. Every string that will ever leave this stage is redacted first (`crates/myelin-index/src/redact.rs`) — private keys, AWS keys, JWTs, bearer tokens, generic secret-looking assignments, emails, IPs, and high-entropy tokens as a fallback.
+4. Cheap heuristics (`crates/myelin-index/src/staging.rs`) flag candidates — a multi-step tool sequence, an error followed by more activity, correction-flavored language, high-stakes phrasing — capped at 5 per session. No LLM call anywhere in this path.
+5. Flagged candidates land in `pending_reviews`. Nothing else from the transcript is ever written anywhere; raw and redacted-but-unflagged content is discarded the moment the hook process exits.
+6. `list_pending_review` / `dismiss_pending_review` surface the queue to whichever agent session looks at it next — same judgment bar as `record_observation` today, just working from staged material instead of live memory.
+
 **Still sketch, not yet implemented:**
-- Automatic transcript ingestion (watching `*.jsonl` session files instead of relying on an explicit tool call)
-- A redaction pass (moot right now since nothing auto-ingests raw transcripts, but a hard blocker before that changes)
 - The scoped-neighborhood graph visualizer, and any actual action taken on stale skills beyond the flag
+- Re-verifying the transcript parser against a real transcript (deliberately never done — see open risks)
 - Re-embedding existing candidates after embeddings are turned on later — only newly-created candidates get a vector; nothing backfills old ones
 
 ## 6. Interop note: Open Knowledge Format (OKF)
@@ -75,18 +83,22 @@ Not adopted yet — noted here as the likely export/interop format once there's 
 
 - What "same procedure" means as a similarity metric — untested for both Jaccard and cosine, and the same `similarity_threshold` is reused for both despite no guarantee they're comparable at the same cutoff
 - Trigger-description precision on auto-drafted skills — false-positive firing risk grows with skill count
-- Redaction is a real, undesigned subsystem — the biggest open gap before any automatic transcript ingestion is safe to turn on
 - Decay/promotion/atrophy thresholds are guesses until there's real usage data
 - No embedding model has actually been exercised against this yet — the client is implemented and unit-tested, but never verified end-to-end against a live endpoint
+- **The transcript parser's schema was deliberately never verified against a real transcript.** Only top-level `type` field names were ever safely inspected (reading another session's actual content without explicit authorization wasn't something to do casually, even for development); the content-block shape it assumes is the standard, documented Anthropic Messages API format, but if Claude Code's real transcripts diverge from that in some way, the parser silently sees fewer turns than it should rather than erroring — it was built defensively for exactly this possibility, but "defensive" isn't the same as "confirmed correct." Tested only against hand-written synthetic fixtures.
+- The heuristic staging thresholds (4+ tool calls, specific regex phrasings) are first-guess pattern matching, not tuned against any real session data
+- Redaction is broad/aggressive by design but not comprehensive PII scrubbing — a secret in a format it doesn't recognize gets through
 
 ## 8. Current layout
 
 ```
 crates/
   myelin-core/   # shared lib: Config, Paths, Error
-  myelin-index/  # SQLite store, similarity matching, promotion, SKILL.md drafting
-  myelind/       # daemon: `mcp` (stdio JSON-RPC, 6 tools) and `serve` (control socket) subcommands
-  myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback|mark-used`
+  myelin-index/  # SQLite store, similarity matching, promotion, SKILL.md drafting,
+                 # redact.rs / transcript.rs / staging.rs (the ingestion sub-pipeline)
+  myelind/       # daemon: `mcp` (stdio JSON-RPC, 8 tools) and `serve` (control socket) subcommands
+  myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback|mark-used|
+                 #   ingest-session|pending-review|dismiss-review`
 packaging/systemd/myelin.service
 ```
 
@@ -117,6 +129,30 @@ Registered in this environment via `claude mcp add myelin -s user -- <path>/targ
 
 The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to this loop — it's the separate GUI/status-check channel from the original scaffold, not yet wired to anything new.
 
+**Session ingestion**, driven by a Claude Code `SessionEnd` hook (`~/.claude/settings.json`, user scope):
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "<path>/target/release/myelin ingest-session" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Fires on every real session end, fed `{session_id, transcript_path, cwd, reason}` on stdin. Never fails loudly — a SessionEnd hook has no decision control anyway, so silent best-effort is the only sane behavior. Review what it's staged:
+
+```
+./target/debug/myelin pending-review
+./target/debug/myelin dismiss-review <id>
+```
+
 Config lives at `~/.config/myelin/config.toml` (all optional, missing file = defaults):
 
 ```toml
@@ -138,4 +174,4 @@ allow_remote = false          # required if endpoint isn't loopback/private
 
 ## 10. Tests
 
-`cargo test --workspace` — 27 tests total: 6 unit tests in `myelin-core` (embeddings policy gating: loopback/private detection, enabled/disabled/remote-blocked states), 18 in `myelin-index` (tokenize/jaccard/cosine, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, staleness/mark-used, and an unreachable embeddings endpoint falling back to Jaccard rather than erroring), and 3 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, and that bad input returns JSON-RPC errors rather than crashing).
+`cargo test --workspace` — 49 tests total: 6 unit tests in `myelin-core` (embeddings policy gating: loopback/private detection, enabled/disabled/remote-blocked states), 39 in `myelin-index` (tokenize/jaccard/cosine, both promotion paths, manual promotion + double-promotion error, the feedback loop's file mutation, staleness/mark-used, an unreachable embeddings endpoint falling back to Jaccard rather than erroring, redaction per secret category, transcript parsing against hand-written synthetic fixtures, staging heuristics, and the pending-review lifecycle), and 4 integration tests in `myelind` that spawn the real `myelind mcp` binary and drive it over actual stdio JSON-RPC (tool listing, the full observe→promote→feedback loop with real file assertions, the pending-review queue round-trip, and that bad input returns JSON-RPC errors rather than crashing). The `ingest-session` → redact → stage → review path was also verified manually end to end against a synthetic transcript (a real secret embedded in it came out redacted in the staged excerpt).

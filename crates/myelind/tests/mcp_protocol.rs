@@ -91,6 +91,8 @@ fn initialize_and_tools_list_match_the_real_dispatch() {
         "promote_skill",
         "record_skill_feedback",
         "mark_skill_used",
+        "list_pending_review",
+        "dismiss_pending_review",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }
@@ -139,6 +141,41 @@ fn full_loop_over_the_real_protocol_promotes_and_accepts_feedback() {
 
     let queue = session.tool(6, "list_warmup_queue", json!({}));
     assert_eq!(queue["candidates"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn pending_review_can_be_listed_and_dismissed_over_the_protocol() {
+    let (data_dir, skills_dir) = scratch_dirs("pending-review");
+    let db_path = data_dir.join("myelin.db");
+
+    // Stage a candidate directly, as `myelin ingest-session` (a separate
+    // CLI binary, not exercised here) would - this proves the MCP tools
+    // read/write the same underlying store, not just their own path.
+    {
+        let store =
+            myelin_index::Store::open(&db_path, myelin_index::StoreConfig::default()).unwrap();
+        store
+            .stage_pending_review(
+                "sess-1",
+                Some("myelin"),
+                "multi-step-sequence",
+                "redacted excerpt",
+            )
+            .unwrap();
+    }
+
+    let mut session = McpSession::start(&data_dir, &skills_dir);
+    let listed = session.tool(1, "list_pending_review", json!({}));
+    let pending = listed["pending"].as_array().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["heuristic_reason"], "multi-step-sequence");
+    let id = pending[0]["id"].as_i64().unwrap();
+
+    let dismissed = session.tool(2, "dismiss_pending_review", json!({ "id": id }));
+    assert_eq!(dismissed["dismissed"], true);
+
+    let listed_again = session.tool(3, "list_pending_review", json!({}));
+    assert_eq!(listed_again["pending"].as_array().unwrap().len(), 0);
 }
 
 #[test]
