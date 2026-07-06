@@ -109,7 +109,7 @@ Or directly via the CLI, against the same SQLite store:
 
 Three similarly-worded `observe` calls (or one with `--high-stakes`) will drop a real `SKILL.md` into `~/.claude/skills/<slug>/` — override the location with `MYELIN_SKILLS_DIR` for testing.
 
-Registered in this environment via `claude mcp add myelin -s user -- <path>/target/debug/myelind mcp` — live in every session from the next `claude`/`claude --resume` onward.
+Registered in this environment via `claude mcp add myelin -s user -- <path>/target/release/myelind mcp` (pointed at the release build, not `target/debug` — `cargo clean` or moving the repo will break it either way, since it's not installed anywhere yet) — live in every session from the next `claude`/`claude --resume` onward.
 
 The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to this loop — it's the separate GUI/status-check channel from the original scaffold, not yet wired to anything new.
 
