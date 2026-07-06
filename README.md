@@ -4,7 +4,7 @@
 
 Myelin — the layer that turns repeated practice into instinct, the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.
 
-**Status:** scaffold only. This repo currently builds a daemon/MCP/CLI skeleton with no ingestion, extraction, or skill-promotion logic yet. Everything below is the design sketch that scaffold is shaped around, not a description of what's implemented.
+**Status:** MVP. The warmup-queue → promotion → real-`SKILL.md` loop works end-to-end, verified over the actual MCP stdio protocol. What's *not* built yet: automatic transcript ingestion, redaction, embeddings-based similarity, and the living-skill feedback loop — see §4/§5 for what's real vs. still sketch.
 
 ---
 
@@ -35,36 +35,32 @@ This is not "index my codebase" (that's [NexusContext](https://github.com/devNal
 - **Living skills** — a promoted `SKILL.md` keeps mutating from usage feedback (corrections, rejections) instead of being a static, one-shot artifact
 - **A redaction/privacy pass** before anything touches storage — transcripts can contain pasted secrets, credentials, PII; source code never raised this concern
 
-## 4. Data model (sketch, not yet implemented)
+## 4. Data model
 
-**Nodes:**
-- `Session` — a source transcript (project, timestamp)
-- `Observation` — a normalized "goal + steps" summary extracted from a session
-- `SkillCandidate` — a cluster of similar Observations; carries confidence/rep-count and a decay timer
-- `Skill` — a promoted, live `SKILL.md` (trigger description + instructions + provenance + usage stats)
-- `Correction` — explicit feedback tied to a Skill or Observation
-- `ContextSignal` — an external stakes marker (ticket text, an explicit scope statement) that can justify fast-track promotion
+**Implemented** (`crates/myelin-index`, SQLite):
+- `observations` — title, summary, project, context_signal, high_stakes, linked to its candidate
+- `skill_candidates` — title, token-overlap `key`, `rep_count`, `status` (`warming`/`promoted`)
+- `skills` — slug, path to the written `SKILL.md`, `promoted_reason` (`reps`/`context_signal`/`manual`), observation count, provenance timestamp
 
-**Edges:**
-- `OBSERVED_IN` (Observation → Session)
-- `EVIDENCE_FOR` (Observation → SkillCandidate)
-- `HARDENED_INTO` (SkillCandidate → Skill)
-- `CORRECTS` / `REINFORCES` (Correction → Skill)
-- `JUSTIFIES` (ContextSignal → SkillCandidate/Skill, the fast-track path)
-- `SUPERSEDES` (Skill → Skill, when a mutation is significant enough to version rather than edit in place)
+**Sketch, not yet implemented:**
+- `Session` node (a source transcript) — there's no transcript ingestion yet, so observations are reported directly by the calling agent instead of mined from a `Session`
+- `Correction` node / `CORRECTS`-`REINFORCES` edges — the living-skill feedback loop (a skill mutating from how it's actually used) doesn't exist yet; promoted skills are static once written
+- `SUPERSEDES` edges — no skill versioning yet, a promotion is a one-shot write
 
-## 5. Pipeline (sketch, not yet implemented)
+## 5. Pipeline
 
-1. Watch session transcripts (reuse the notify-debounce pattern)
-2. Redact obvious secrets before anything else touches the content
-3. Capture-worthiness gate — domain/org-specific, or just baseline agent behavior?
-4. Extract into a normalized `Observation`
-5. Embed + match against the `SkillCandidate` queue — increment reps on a match, spawn a new candidate on a miss
-6. Promotion check — reps threshold crossed, **or** a `ContextSignal` judged high-stakes enough to fast-track off rep 1
-7. On promotion: auto-draft `SKILL.md`, goes live immediately, tagged with provenance (observation count, source sessions)
-8. Every real invocation afterward (success/correction/rejection) is itself new evidence, feeding back into the skill's confidence and potentially rewriting its instructions
-9. Atrophy: unused skills get flagged (not silently deleted) via the inverted warm/cold gate
-10. Visualization: a bounded-neighborhood graph view (one skill, one campaign, one time window — never the whole graph) as the primary tool for manual merge/demote/prune
+**Implemented:**
+1. The calling agent reports a noteworthy procedure via the `record_observation` MCP tool (or `myelin observe` for debugging) — this **is** the extraction step for now: no transcript mining, no separate LLM call, no redaction subsystem, because the reporting agent already decides what's worth saying and never passes along anything it shouldn't.
+2. Token-overlap (Jaccard) matching against existing candidates — a real, crude, no-embeddings-required stand-in for "is this the same procedure." (`PROMOTION_REPS = 3`, `SIMILARITY_THRESHOLD = 0.4` in `store.rs` — guesses, easy to retune.)
+3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
+4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
+
+**Still sketch, not yet implemented:**
+- Automatic transcript ingestion (watching `*.jsonl` session files instead of relying on an explicit tool call)
+- A redaction pass (moot right now since nothing auto-ingests raw transcripts, but a hard blocker before that changes)
+- Embeddings-based similarity (upgrade path once token-overlap proves too blunt)
+- The living-skill feedback loop: corrections/rejections mutating a promoted skill's instructions
+- Atrophy (flagging unused skills) and the scoped-neighborhood graph visualizer
 
 ## 6. Interop note: Open Knowledge Format (OKF)
 
@@ -83,16 +79,32 @@ Not adopted yet — noted here as the likely export/interop format once there's 
 
 ```
 crates/
-  myelin-core/   # shared lib: Config, Paths, Error — no pipeline types yet
-  myelind/       # daemon: `mcp` (stdio JSON-RPC) and `serve` (control socket) subcommands
-  myelin-cli/    # `myelin status` — pings the control socket
+  myelin-core/   # shared lib: Config, Paths, Error
+  myelin-index/  # SQLite store, similarity matching, promotion, SKILL.md drafting
+  myelind/       # daemon: `mcp` (stdio JSON-RPC, 4 tools) and `serve` (control socket) subcommands
+  myelin-cli/    # `myelin status|observe|queue|skills|promote`
 packaging/systemd/myelin.service
 ```
 
 ## 9. Try it
 
+As an MCP server (what Claude Code actually speaks):
+
 ```
 cargo build
-./target/debug/myelind serve &
-./target/debug/myelin status
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"record_observation","arguments":{"title":"...","summary":"..."}}}' \
+  | ./target/debug/myelind mcp
 ```
+
+Or directly via the CLI, against the same SQLite store:
+
+```
+./target/debug/myelin observe --title "apply db migration hotfix" --summary "run migrate.sh, restart service, verify health endpoint" --project repoA
+./target/debug/myelin queue     # candidates still warming up
+./target/debug/myelin skills    # promoted skills, with provenance
+./target/debug/myelin promote <candidate_id>   # force-promote early
+```
+
+Three similarly-worded `observe` calls (or one with `--high-stakes`) will drop a real `SKILL.md` into `~/.claude/skills/<slug>/` — override the location with `MYELIN_SKILLS_DIR` for testing.
+
+The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to this loop — it's the separate GUI/status-check channel from the original scaffold, not yet wired to anything new.

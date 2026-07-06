@@ -6,6 +6,7 @@ description = "Myelin daemon: MCP server and control API for the personal skill-
 
 [dependencies]
 myelin-core.workspace = true
+myelin-index.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

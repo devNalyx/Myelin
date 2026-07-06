@@ -1,4 +1,4 @@
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 use std::path::PathBuf;
 
 /// Resolved filesystem locations. Config lives at `~/.config/myelin`, data at
@@ -43,5 +43,24 @@ impl Paths {
 
     pub fn log_file(&self) -> PathBuf {
         self.data_dir.join("myelind.log")
+    }
+
+    pub fn db_file(&self) -> PathBuf {
+        self.data_dir.join("myelin.db")
+    }
+
+    /// Where promoted skills get written. Deliberately the *personal*
+    /// skills directory (not a project-scoped `.claude/skills`), since the
+    /// whole point is patterns that generalize across repos, not one.
+    /// Overridable via `MYELIN_SKILLS_DIR` for testing.
+    pub fn skills_dir(&self) -> PathBuf {
+        if let Some(dir) = std::env::var_os("MYELIN_SKILLS_DIR") {
+            return PathBuf::from(dir);
+        }
+        BaseDirs::new()
+            .expect("could not determine a home directory for the current user")
+            .home_dir()
+            .join(".claude")
+            .join("skills")
     }
 }
