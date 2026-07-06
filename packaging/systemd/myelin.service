@@ -1,0 +1,22 @@
+[Unit]
+Description=Myelin personal skill-formation daemon
+Documentation=https://github.com/
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/myelind serve
+Restart=on-failure
+RestartSec=2
+# The control API only ever touches its own config/data dirs; nothing here
+# needs network or broader filesystem access.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/myelin %h/.config/myelin
+# Matches myelin_core::Paths, which puts the control socket at
+# $XDG_RUNTIME_DIR/myelin/.
+RuntimeDirectory=myelin
+
+[Install]
+WantedBy=default.target

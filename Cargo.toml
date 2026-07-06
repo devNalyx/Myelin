@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/myelin-core",
+    "crates/myelind",
+    "crates/myelin-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+
+[workspace.dependencies]
+myelin-core = { path = "crates/myelin-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+directories = "5"
