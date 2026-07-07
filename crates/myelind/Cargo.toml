@@ -23,6 +23,10 @@ assets = [
 # No GUI crate, no C-source grammar crates to link against - $auto alone
 # (rusqlite's bundled sqlite3, statically linked) is sufficient.
 depends = "$auto"
+# graphviz's `dot` is only used by render_skill_graph, and only to render
+# a PNG - the command falls back to raw DOT source without it, so it's a
+# Recommends rather than a hard Depends.
+recommends = "graphviz"
 
 [dependencies]
 myelin-core.workspace = true

@@ -20,8 +20,8 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 - SQLite + WAL + FTS5 for storage/search (once storage logic lands)
 - Config/TOML, systemd user unit, CLI, `.deb` packaging conventions
 - Export/import as a portable snapshot
-- Warm/cold gating (judge staleness by last-used, not last-modified) — currently an informational flag on skills; a natural next step is acting on it (e.g. no longer surfacing a cold skill in search) rather than just flagging it
-- A scoped-neighborhood visualization pattern planned for browsing the learned graph — never the whole graph at once, always a bounded slice around whatever's being inspected
+- Warm/cold gating (judge staleness by last-used, not last-modified) — an informational `stale` flag on skills; acting on it (`archive_skill`) is always an explicit, agent/user-invoked call, never automatic, since there's no evidence yet for what threshold would be safe to act on unsupervised
+- A scoped-neighborhood visualization for browsing the graph — never the whole graph at once, always a bounded slice (one skill, its candidate, its observations, its corrections) rendered via Graphviz
 
 ## 3. What makes this different from a typical indexer
 
@@ -42,6 +42,7 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 - `skills` — slug, path to the written `SKILL.md`, `promoted_reason` (`reps`/`context_signal`/`manual`), observation count, provenance timestamp
 - `corrections` — skill_id, `kind` (`correction`/`confirmation`), note, timestamp; corrections also get appended live into the skill's actual `SKILL.md`
 - `skills.last_invoked_at` — set by `mark_skill_used`; `list_skills` derives a `stale` flag from it (falling back to `created_at` if a skill's never been marked used)
+- `skills.status` (`active`/`archived`) — set by `archive_skill`/`restore_skill`, which also physically move the `SKILL.md` file between the live skills directory and an `.myelin-archived/` subfolder so an archived skill actually stops being loadable
 - `pending_reviews` — session_id, project, `heuristic_reason` (`multi-step-sequence`/`error-then-fix`/`correction-language`/`high-stakes-phrasing`), an already-redacted and bounded `excerpt`, `status` (`pending`/`dismissed`). This is the only table that ever holds anything derived from a raw transcript, and only ever the redacted excerpt — never the transcript itself
 
 **Sketch, not yet implemented:**
@@ -56,7 +57,9 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
-6. `mark_skill_used` (or `myelin mark-used`) records that a skill was actually invoked, independent of feedback. `list_skills` flags a skill `stale` once `[atrophy] stale_after_secs` (default 30 days) has passed since its last use (or since promotion, if it's never been used) — informational only, nothing deletes or unregisters a stale skill automatically.
+6. `mark_skill_used` (or `myelin mark-used`) records that a skill was actually invoked, independent of feedback. `list_skills` flags a skill `stale` once `[atrophy] stale_after_secs` (default 30 days) has passed since its last use (or since promotion, if it's never been used) — informational only; nothing acts on it automatically.
+7. `archive_skill` (or `myelin archive-skill`) moves a skill's file out of the live skills directory into `.myelin-archived/` and marks it `archived` — always an explicit call an agent or the user makes after looking at the `stale` flag, never triggered by the flag itself. `restore_skill` reverses it exactly.
+8. `render_skill_graph` (or `myelin graph <id>`) renders one skill's bounded neighborhood — its candidate, the observations that backed it, its corrections/confirmations — as a PNG via Graphviz, using the original design ontology's edge names (`EVIDENCE_FOR`, `HARDENED_INTO`, `CORRECTS`/`REINFORCES`). Falls back to returning the raw DOT source if `dot` isn't installed (a Recommends, not a hard dependency).
 
 **Ingestion sub-pipeline (implemented):**
 1. A `SessionEnd` hook (`matcher: "*"`, every reason) runs `myelin ingest-session`, fed the hook's JSON payload (`session_id`, `transcript_path`, `cwd`) on stdin.
@@ -67,8 +70,8 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 6. `list_pending_review` / `dismiss_pending_review` surface the queue to whichever agent session looks at it next — same judgment bar as `record_observation` today, just working from staged material instead of live memory.
 
 **Still sketch, not yet implemented:**
-- The scoped-neighborhood graph visualizer, and any actual action taken on stale skills beyond the flag
 - Broader verification of the transcript parser — it correctly parsed one real session (see §7), which is real signal but not broad coverage
+- Anything automatic acting on the `stale` flag — archiving stays a deliberate, explicit call by design (see §2), not a gap to fill later
 
 ## 6. Interop note: Open Knowledge Format (OKF)
 

@@ -93,6 +93,9 @@ fn initialize_and_tools_list_match_the_real_dispatch() {
         "mark_skill_used",
         "list_pending_review",
         "dismiss_pending_review",
+        "archive_skill",
+        "restore_skill",
+        "render_skill_graph",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }
@@ -141,6 +144,36 @@ fn full_loop_over_the_real_protocol_promotes_and_accepts_feedback() {
 
     let queue = session.tool(6, "list_warmup_queue", json!({}));
     assert_eq!(queue["candidates"].as_array().unwrap().len(), 0);
+
+    // Archive/restore round trip, over the same protocol connection.
+    let archived = session.tool(7, "archive_skill", json!({ "skill_id": skill_id }));
+    assert_eq!(archived["archived"], true);
+    let archived_path = archived["path"].as_str().unwrap();
+    assert!(!std::path::Path::new(&skill_path).exists());
+    assert!(std::path::Path::new(archived_path).exists());
+
+    let skills_after_archive = session.tool(8, "list_skills", json!({}));
+    assert_eq!(skills_after_archive["skills"][0]["status"], "archived");
+
+    let restored = session.tool(9, "restore_skill", json!({ "skill_id": skill_id }));
+    assert_eq!(restored["restored"], true);
+    assert_eq!(restored["path"], skill_path);
+    assert!(std::path::Path::new(&skill_path).exists());
+
+    // Graphviz is a Recommends, not a Depends - CI runners may not have
+    // it, so this tolerates both outcomes rather than assuming either.
+    let graph = session.tool(10, "render_skill_graph", json!({ "skill_id": skill_id }));
+    match graph["rendered"].as_bool() {
+        Some(true) => {
+            let path = graph["path"].as_str().unwrap();
+            assert!(std::path::Path::new(path).exists());
+        }
+        Some(false) => {
+            let dot = graph["dot"].as_str().unwrap();
+            assert!(dot.starts_with("digraph"));
+        }
+        _ => panic!("render_skill_graph response missing a boolean 'rendered' field"),
+    }
 }
 
 #[test]

@@ -89,6 +89,33 @@ pub fn tool_definitions() -> Value {
                 "properties": { "id": { "type": "integer", "description": "From list_pending_review." } },
                 "required": ["id"]
             }
+        },
+        {
+            "name": "archive_skill",
+            "description": "Move a skill's SKILL.md out of the live skills directory so it stops being loadable, without deleting it - use this when you (or the user) decide a skill flagged `stale` in list_skills genuinely isn't useful anymore. Always an explicit call - the stale flag never triggers this on its own. Reversible via restore_skill.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "skill_id": { "type": "integer", "description": "From list_skills." } },
+                "required": ["skill_id"]
+            }
+        },
+        {
+            "name": "restore_skill",
+            "description": "Reverse archive_skill - moves the file back into the live skills directory and marks it active again.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "skill_id": { "type": "integer", "description": "From list_skills." } },
+                "required": ["skill_id"]
+            }
+        },
+        {
+            "name": "render_skill_graph",
+            "description": "Render one skill's bounded neighborhood - the candidate that produced it, the observations that backed it, any corrections/confirmations - as a PNG you can view directly (e.g. with your Read tool). Never the whole graph, always scoped to one skill. Falls back to returning the raw DOT source if Graphviz isn't installed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "skill_id": { "type": "integer", "description": "From list_skills." } },
+                "required": ["skill_id"]
+            }
         }
     ])
 }
@@ -174,6 +201,42 @@ pub fn call(params: Value) -> anyhow::Result<Value> {
                 .ok_or_else(|| anyhow::anyhow!("missing id"))?;
             store.dismiss_pending_review(id)?;
             Ok(json!({ "dismissed": true }))
+        }
+        "archive_skill" => {
+            let store = open_store()?;
+            let skill_id = args
+                .get("skill_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing skill_id"))?;
+            let path = store.archive_skill(skill_id, &skills_dir())?;
+            Ok(json!({ "archived": true, "path": path }))
+        }
+        "restore_skill" => {
+            let store = open_store()?;
+            let skill_id = args
+                .get("skill_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing skill_id"))?;
+            let path = store.restore_skill(skill_id, &skills_dir())?;
+            Ok(json!({ "restored": true, "path": path }))
+        }
+        "render_skill_graph" => {
+            let store = open_store()?;
+            let skill_id = args
+                .get("skill_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing skill_id"))?;
+            let neighborhood = store.skill_neighborhood(skill_id)?;
+            let dot = myelin_index::graph::to_dot(&neighborhood);
+
+            let graphs_dir = myelin_core::Paths::resolve().data_dir.join("graphs");
+            std::fs::create_dir_all(&graphs_dir)?;
+            let output_path = graphs_dir.join(format!("skill-{skill_id}.png"));
+
+            match myelin_index::graph::render_png(&dot, &output_path) {
+                Ok(()) => Ok(json!({ "rendered": true, "path": output_path.to_string_lossy() })),
+                Err(err) => Ok(json!({ "rendered": false, "error": err.to_string(), "dot": dot })),
+            }
         }
         other => anyhow::bail!("unknown tool: {other}"),
     }

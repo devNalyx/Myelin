@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use myelin_index::{NewObservation, Store, StoreConfig};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "myelin", about = "Myelin CLI")]
@@ -55,6 +56,19 @@ enum Command {
     PendingReview,
     /// Clear a staged candidate - whether or not it was acted on.
     DismissReview { id: i64 },
+    /// Move a skill's SKILL.md out of the live skills directory - it
+    /// stops being loadable, but nothing is deleted. Explicit only.
+    ArchiveSkill { skill_id: i64 },
+    /// Reverse archive-skill.
+    RestoreSkill { skill_id: i64 },
+    /// Render one skill's bounded neighborhood (its candidate, backing
+    /// observations, corrections/confirmations) as a PNG via Graphviz.
+    /// Falls back to writing the .dot source if `dot` isn't installed.
+    Graph {
+        skill_id: i64,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -79,6 +93,9 @@ fn main() -> Result<()> {
         Command::IngestSession => ingest_session(),
         Command::PendingReview => pending_review(),
         Command::DismissReview { id } => dismiss_review(id),
+        Command::ArchiveSkill { skill_id } => archive_skill(skill_id),
+        Command::RestoreSkill { skill_id } => restore_skill(skill_id),
+        Command::Graph { skill_id, output } => graph(skill_id, output),
     }
 }
 
@@ -214,6 +231,42 @@ fn dismiss_review(id: i64) -> Result<()> {
     let store = open_store()?;
     store.dismiss_pending_review(id)?;
     println!("dismissed");
+    Ok(())
+}
+
+fn archive_skill(skill_id: i64) -> Result<()> {
+    let store = open_store()?;
+    let skills_dir = myelin_core::Paths::resolve().skills_dir();
+    let path = store.archive_skill(skill_id, &skills_dir)?;
+    println!("archived -> {path}");
+    Ok(())
+}
+
+fn restore_skill(skill_id: i64) -> Result<()> {
+    let store = open_store()?;
+    let skills_dir = myelin_core::Paths::resolve().skills_dir();
+    let path = store.restore_skill(skill_id, &skills_dir)?;
+    println!("restored -> {path}");
+    Ok(())
+}
+
+fn graph(skill_id: i64, output: Option<PathBuf>) -> Result<()> {
+    let store = open_store()?;
+    let neighborhood = store.skill_neighborhood(skill_id)?;
+    let dot = myelin_index::graph::to_dot(&neighborhood);
+    let output = output.unwrap_or_else(|| PathBuf::from(format!("myelin-skill-{skill_id}.png")));
+
+    match myelin_index::graph::render_png(&dot, &output) {
+        Ok(()) => println!("rendered -> {}", output.display()),
+        Err(err) => {
+            let dot_path = output.with_extension("dot");
+            std::fs::write(&dot_path, &dot)?;
+            println!(
+                "could not render PNG ({err}) - wrote DOT source instead -> {}",
+                dot_path.display()
+            );
+        }
+    }
     Ok(())
 }
 

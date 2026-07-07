@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS skills (
     promoted_reason TEXT NOT NULL,
     observation_count INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    last_invoked_at TEXT
+    last_invoked_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
 );
 
 CREATE TABLE IF NOT EXISTS corrections (
@@ -136,8 +137,12 @@ pub struct SkillView {
     pub confirmation_count: i64,
     pub last_invoked_at: Option<String>,
     /// No activity (last_invoked_at, or created_at if never invoked) for
-    /// `stale_after_secs` — informational only, nothing acts on this yet.
+    /// `stale_after_secs`. Purely informational - `stale` never triggers
+    /// `archive_skill` automatically; an agent decides.
     pub stale: bool,
+    /// `active` (live in `~/.claude/skills/`) or `archived` (moved out,
+    /// via `archive_skill` - always an explicit action, never automatic).
+    pub status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,6 +160,32 @@ pub struct PendingReviewView {
     pub project: Option<String>,
     pub heuristic_reason: String,
     pub excerpt: String,
+}
+
+/// A bounded slice of the graph around one skill - never the whole
+/// store's data at once. Feeds `crate::graph::to_dot`.
+#[derive(Debug, Serialize)]
+pub struct SkillNeighborhood {
+    pub skill_id: i64,
+    pub skill_name: String,
+    pub promoted_reason: String,
+    pub candidate_id: i64,
+    pub candidate_title: String,
+    pub rep_count: i64,
+    pub observations: Vec<ObservationRef>,
+    pub corrections: Vec<CorrectionRef>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ObservationRef {
+    pub summary: String,
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CorrectionRef {
+    pub kind: String,
+    pub note: String,
 }
 
 fn tokenize(text: &str) -> HashSet<String> {
@@ -213,6 +244,7 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "skills", "last_invoked_at", "TEXT")?;
+        ensure_column(&conn, "skills", "status", "TEXT NOT NULL DEFAULT 'active'")?;
         Ok(Self {
             conn,
             promotion_reps: config.promotion_reps,
@@ -405,7 +437,7 @@ impl Store {
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillView>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.candidate_id, s.slug, s.name, s.path, s.promoted_reason,
-                    s.observation_count, s.created_at, s.last_invoked_at,
+                    s.observation_count, s.created_at, s.last_invoked_at, s.status,
                     (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'correction'),
                     (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'confirmation')
              FROM skills s ORDER BY s.created_at DESC",
@@ -428,12 +460,69 @@ impl Store {
                 observation_count: row.get(6)?,
                 created_at,
                 last_invoked_at,
-                correction_count: row.get(9)?,
-                confirmation_count: row.get(10)?,
+                status: row.get(9)?,
+                correction_count: row.get(10)?,
+                confirmation_count: row.get(11)?,
                 stale: seconds_since(now, &reference_ts) >= self.stale_after_secs,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// The bounded neighborhood around one skill: its candidate, the
+    /// observations that backed it, and any corrections/confirmations
+    /// it's since received. Never returns more than that one skill's
+    /// slice - there's no "whole graph" query in this store on purpose.
+    pub fn skill_neighborhood(&self, skill_id: i64) -> anyhow::Result<SkillNeighborhood> {
+        let (skill_name, promoted_reason, candidate_id): (String, String, i64) = self
+            .conn
+            .query_row(
+                "SELECT name, promoted_reason, candidate_id FROM skills WHERE id = ?1",
+                params![skill_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| anyhow::anyhow!("no such skill: {skill_id}"))?;
+
+        let (candidate_title, rep_count): (String, i64) = self.conn.query_row(
+            "SELECT title, rep_count FROM skill_candidates WHERE id = ?1",
+            params![candidate_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        let mut obs_stmt = self.conn.prepare(
+            "SELECT summary, project FROM observations WHERE candidate_id = ?1 ORDER BY id",
+        )?;
+        let observations = obs_stmt
+            .query_map(params![candidate_id], |r| {
+                Ok(ObservationRef {
+                    summary: r.get(0)?,
+                    project: r.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut corr_stmt = self
+            .conn
+            .prepare("SELECT kind, note FROM corrections WHERE skill_id = ?1 ORDER BY id")?;
+        let corrections = corr_stmt
+            .query_map(params![skill_id], |r| {
+                Ok(CorrectionRef {
+                    kind: r.get(0)?,
+                    note: r.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(SkillNeighborhood {
+            skill_id,
+            skill_name,
+            promoted_reason,
+            candidate_id,
+            candidate_title,
+            rep_count,
+            observations,
+            corrections,
+        })
     }
 
     /// Marks a skill as just having been invoked/followed - the signal
@@ -450,6 +539,67 @@ impl Store {
             anyhow::bail!("no such skill: {skill_id}");
         }
         Ok(())
+    }
+
+    /// Moves a skill's file out of the live skills directory into an
+    /// archived subfolder, so it stops being loadable as an active skill.
+    /// Nothing is deleted; `restore_skill` reverses it exactly. Always an
+    /// explicit call; the `stale` flag never triggers this on its own.
+    pub fn archive_skill(&self, skill_id: i64, skills_dir: &Path) -> anyhow::Result<String> {
+        let (slug, path, status) = self.skill_slug_path_status(skill_id)?;
+        if status == "archived" {
+            anyhow::bail!("skill {skill_id} is already archived");
+        }
+        let archived_dir = skills_dir.join(".myelin-archived").join(&slug);
+        self.relocate_skill(skill_id, &path, &archived_dir, "archived")
+    }
+
+    /// Reverses `archive_skill` - moves the file back under the live
+    /// skills directory and marks it `active` again.
+    pub fn restore_skill(&self, skill_id: i64, skills_dir: &Path) -> anyhow::Result<String> {
+        let (slug, path, status) = self.skill_slug_path_status(skill_id)?;
+        if status == "active" {
+            anyhow::bail!("skill {skill_id} is already active");
+        }
+        let active_dir = skills_dir.join(&slug);
+        self.relocate_skill(skill_id, &path, &active_dir, "active")
+    }
+
+    fn skill_slug_path_status(&self, skill_id: i64) -> anyhow::Result<(String, String, String)> {
+        self.conn
+            .query_row(
+                "SELECT slug, path, status FROM skills WHERE id = ?1",
+                params![skill_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| anyhow::anyhow!("no such skill: {skill_id}"))
+    }
+
+    fn relocate_skill(
+        &self,
+        skill_id: i64,
+        current_path: &str,
+        new_dir: &Path,
+        new_status: &str,
+    ) -> anyhow::Result<String> {
+        std::fs::create_dir_all(new_dir)?;
+        let new_path = new_dir.join("SKILL.md");
+        std::fs::rename(current_path, &new_path)?;
+
+        // Clean up the now-empty source directory. remove_dir (not
+        // remove_dir_all) only succeeds if it's actually empty, so this
+        // is a no-op rather than a hazard if anything unexpected is
+        // still in there.
+        if let Some(old_dir) = Path::new(current_path).parent() {
+            let _ = std::fs::remove_dir(old_dir);
+        }
+
+        let new_path_str = new_path.to_string_lossy().to_string();
+        self.conn.execute(
+            "UPDATE skills SET path = ?1, status = ?2 WHERE id = ?3",
+            params![new_path_str, new_status, skill_id],
+        )?;
+        Ok(new_path_str)
     }
 
     /// Records feedback on a promoted skill. `kind` is "correction" (the
@@ -875,5 +1025,57 @@ mod tests {
         store.dismiss_pending_review(id).unwrap();
         let err = store.dismiss_pending_review(id).unwrap_err();
         assert!(err.to_string().contains("no pending review"));
+    }
+
+    #[test]
+    fn archive_then_restore_a_skill_round_trips_the_file_and_status() {
+        let (store, skills_dir) = open_test_store("archive-restore");
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        let result = store.record_observation(input, &skills_dir).unwrap();
+        let original_path = result.skill_path.unwrap();
+        let skill_id = store.list_skills().unwrap()[0].id;
+        assert_eq!(store.list_skills().unwrap()[0].status, "active");
+        assert!(std::path::Path::new(&original_path).exists());
+
+        let archived_path = store.archive_skill(skill_id, &skills_dir).unwrap();
+        assert!(!std::path::Path::new(&original_path).exists());
+        assert!(std::path::Path::new(&archived_path).exists());
+        assert!(archived_path.contains(".myelin-archived"));
+        assert_eq!(store.list_skills().unwrap()[0].status, "archived");
+        // Regression: relocate_skill used to leave the now-empty original
+        // directory behind instead of cleaning it up.
+        let original_dir = std::path::Path::new(&original_path).parent().unwrap();
+        assert!(!original_dir.exists(), "empty source dir should be removed");
+
+        let restored_path = store.restore_skill(skill_id, &skills_dir).unwrap();
+        assert!(!std::path::Path::new(&archived_path).exists());
+        assert!(std::path::Path::new(&restored_path).exists());
+        assert_eq!(restored_path, original_path);
+        assert_eq!(store.list_skills().unwrap()[0].status, "active");
+        let archived_dir = std::path::Path::new(&archived_path).parent().unwrap();
+        assert!(
+            !archived_dir.exists(),
+            "empty archived dir should be removed"
+        );
+    }
+
+    #[test]
+    fn archive_and_restore_reject_redundant_state_changes_and_unknown_ids() {
+        let (store, skills_dir) = open_test_store("archive-restore-errors");
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        store.record_observation(input, &skills_dir).unwrap();
+        let skill_id = store.list_skills().unwrap()[0].id;
+
+        let err = store.restore_skill(skill_id, &skills_dir).unwrap_err();
+        assert!(err.to_string().contains("already active"));
+
+        store.archive_skill(skill_id, &skills_dir).unwrap();
+        let err = store.archive_skill(skill_id, &skills_dir).unwrap_err();
+        assert!(err.to_string().contains("already archived"));
+
+        let err = store.archive_skill(999_999, &skills_dir).unwrap_err();
+        assert!(err.to_string().contains("no such skill"));
     }
 }
