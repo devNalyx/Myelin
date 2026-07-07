@@ -405,6 +405,7 @@
       <a href="#tools">Tools</a>
       <a href="#architecture">Architecture</a>
       <a href="#status">Status</a>
+      <a href="#tips">Tips</a>
       <a href="#install">Install</a>
       <a href="https://github.com/devNalyx/Myelin">GitHub</a>
     </nav>
@@ -425,9 +426,9 @@
       <a class="btn btn-ghost" href="#install">Quick install</a>
     </div>
     <div class="stat-row">
-      <div class="stat"><div class="n">8</div><div class="l">MCP tools</div></div>
+      <div class="stat"><div class="n">11</div><div class="l">MCP tools</div></div>
       <div class="stat"><div class="n">2</div><div class="l">Promotion paths</div></div>
-      <div class="stat"><div class="n">40</div><div class="l">Tests passing</div></div>
+      <div class="stat"><div class="n">46</div><div class="l">Tests passing</div></div>
       <div class="stat"><div class="n">0</div><div class="l">Config required to start</div></div>
     </div>
   </section>
@@ -505,7 +506,7 @@
   <section id="tools">
     <div class="section-head">
       <div class="kicker">What an agent can actually call</div>
-      <h2>8 MCP tools, grouped by what they do</h2>
+      <h2>11 MCP tools, grouped by what they do</h2>
       <p>Every tool is backed by the same SQLite store — no separate index to keep in sync.</p>
     </div>
     <div class="tool-groups">
@@ -544,6 +545,10 @@
           <div class="name">list_skills</div>
           <div class="desc">Promoted skills with full provenance — reason, observation count, staleness.</div>
         </div>
+        <div class="tool-row">
+          <div class="name">render_skill_graph</div>
+          <div class="desc">One skill's bounded neighborhood — candidate, observations, corrections — as a PNG.</div>
+        </div>
       </div>
       <div class="tool-group">
         <div class="group-label">Review queue</div>
@@ -554,6 +559,17 @@
         <div class="tool-row">
           <div class="name">dismiss_pending_review</div>
           <div class="desc">Clear a staged item, whether or not it became an observation.</div>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="group-label">Archive</div>
+        <div class="tool-row">
+          <div class="name">archive_skill</div>
+          <div class="desc">Move a stale skill's file out of the live directory — explicit only, never automatic.</div>
+        </div>
+        <div class="tool-row">
+          <div class="name">restore_skill</div>
+          <div class="desc">Reverse archive_skill exactly.</div>
         </div>
       </div>
     </div>
@@ -587,7 +603,7 @@
       <div class="spec"><div class="k">Promotion</div><div class="v">Reps threshold, or explicit high-stakes signal</div></div>
       <div class="spec"><div class="k">Feedback</div><div class="v">Corrections appended live into the promoted file</div></div>
       <div class="spec"><div class="k">Atrophy</div><div class="v">Informational stale flag, judged by last-invoked</div></div>
-      <div class="spec"><div class="k">Tests</div><div class="v">40 passing — unit + real MCP stdio protocol</div></div>
+      <div class="spec"><div class="k">Tests</div><div class="v">46 passing — unit + real MCP stdio protocol</div></div>
     </div>
   </section>
 
@@ -603,13 +619,53 @@
         <li><span class="mark">✓</span> Living <code>SKILL.md</code> — corrections mutate it directly</li>
         <li><span class="mark">✓</span> Usage tracking + informational atrophy flag</li>
         <li><span class="mark">✓</span> Automatic session ingestion — <code>SessionEnd</code> hook, redaction, heuristic staging, agent review</li>
+        <li><span class="mark">✓</span> Skill archive/restore — explicit only, never triggered by the stale flag itself</li>
+        <li><span class="mark">✓</span> Scoped-neighborhood graph visualizer, rendered via Graphviz</li>
         <li><span class="mark">✓</span> CI (fmt/clippy/test) + MCP protocol integration tests</li>
       </ul>
       <ul class="status-list pending">
-        <li><span class="mark">○</span> Scoped-neighborhood graph visualizer</li>
-        <li><span class="mark">○</span> Any action taken on a stale skill beyond the flag</li>
         <li><span class="mark">○</span> Broader real-world validation of the ingestion heuristics — verified against one real session so far</li>
       </ul>
+    </div>
+  </section>
+
+  <section id="tips">
+    <div class="section-head">
+      <div class="kicker">Getting good skills out of it</div>
+      <h2>Using Myelin well</h2>
+      <p>None of this is required — it just makes the difference between a skill library that's actually useful and one that's noise.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="icon">1</div>
+        <h3>Don't manufacture reps</h3>
+        <p>The loop is fed by real sessions, not busywork. Work normally across your projects — Myelin only stages something when a heuristic actually fires.</p>
+      </div>
+      <div class="card">
+        <div class="icon">2</div>
+        <h3>Clear the review queue</h3>
+        <p>Auto-staged candidates sit in <code>list_pending_review</code> until someone looks. Check it periodically and <code>dismiss_pending_review</code> what isn't worth keeping — an unreviewed queue is just noise.</p>
+      </div>
+      <div class="card">
+        <div class="icon">3</div>
+        <h3>Reach for high-stakes deliberately</h3>
+        <p>Don't wait on reps for something you'll only ever do once and can't afford to get wrong — a key rotation, a prod migration. Flag it high-stakes and it promotes on the first observation.</p>
+      </div>
+      <div class="card">
+        <div class="icon">4</div>
+        <h3>Correct instead of working around</h3>
+        <p>If a promoted skill's advice is wrong or incomplete, say so with <code>record_skill_feedback</code> (kind <code>correction</code>) right then. It mutates the live <code>SKILL.md</code> directly — silently working around a bad skill just leaves it bad.</p>
+      </div>
+      <div class="card">
+        <div class="icon">5</div>
+        <h3>Stale is a prompt, not a verdict</h3>
+        <p>The <code>stale</code> flag is informational and never acts on its own. Before archiving, check whether it's actually unused or just quiet lately — <code>archive_skill</code> is reversible via <code>restore_skill</code>, but it's still a judgment call, not a cleanup chore.</p>
+      </div>
+      <div class="card">
+        <div class="icon">6</div>
+        <h3>Graph it before you trust or archive it</h3>
+        <p><code>render_skill_graph</code> shows exactly what backs a skill — how many observations, what they said, every correction since. Worth a look whenever a skill's advice surprises you either way.</p>
+      </div>
     </div>
   </section>
 
