@@ -108,6 +108,7 @@ fn open_store() -> Result<Store> {
             promotion_reps: config.promotion.reps,
             similarity_threshold: config.promotion.similarity_threshold,
             stale_after_secs: config.atrophy.stale_after_secs,
+            max_active_skills: config.pruning.max_active_skills,
         },
     )
 }
@@ -137,11 +138,7 @@ fn observe(
 
 fn queue() -> Result<()> {
     let store = open_store()?;
-    let candidates: Vec<_> = store
-        .list_candidates()?
-        .into_iter()
-        .filter(|c| c.status == "warming")
-        .collect();
+    let candidates = store.list_candidates(200)?;
     println!("{}", serde_json::to_string_pretty(&candidates)?);
     Ok(())
 }
@@ -155,8 +152,16 @@ fn skills() -> Result<()> {
 fn promote(candidate_id: i64) -> Result<()> {
     let store = open_store()?;
     let skills_dir = myelin_core::Paths::resolve().skills_dir();
-    let path = store.promote_candidate(candidate_id, &skills_dir)?;
-    println!("promoted -> {path}");
+    let outcome = store.promote_candidate(candidate_id, &skills_dir)?;
+    println!("promoted -> {}", outcome.path);
+    if !outcome.evicted.is_empty() {
+        let slugs: Vec<_> = outcome.evicted.iter().map(|e| e.slug.as_str()).collect();
+        println!(
+            "auto-archived {} skill(s) to stay under the cap: {}",
+            outcome.evicted.len(),
+            slugs.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -222,7 +227,7 @@ fn pending_review() -> Result<()> {
     let store = open_store()?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&store.list_pending_review()?)?
+        serde_json::to_string_pretty(&store.list_pending_review(200)?)?
     );
     Ok(())
 }

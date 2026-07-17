@@ -20,7 +20,7 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 - SQLite + WAL + FTS5 for storage/search (once storage logic lands)
 - Config/TOML, systemd user unit, CLI, `.deb` packaging conventions
 - Export/import as a portable snapshot
-- Warm/cold gating (judge staleness by last-used, not last-modified) — an informational `stale` flag on skills; acting on it (`archive_skill`) is always an explicit, agent/user-invoked call, never automatic, since there's no evidence yet for what threshold would be safe to act on unsupervised
+- Warm/cold gating (judge staleness by last-used, not last-modified) — a `stale` flag on skills, informational for humans/agents (an explicit `archive_skill` call is still the only way *you* act on it). The one exception: `[pruning] max_active_skills` uses the same last-used signal internally to auto-archive the least-recently-used *active* skill(s) at promotion time, purely as a soft cap so the live skill count can't grow forever - never as a judgment that a skill is "bad," just "oldest."
 - A scoped-neighborhood visualization for browsing the graph — never the whole graph at once, always a bounded slice (one skill, its candidate, its observations, its corrections) rendered via Graphviz
 
 ## 3. What makes this different from a typical indexer
@@ -52,13 +52,14 @@ It isn't a codebase indexer. It's about noticing what you keep doing, not what y
 ## 5. Pipeline
 
 **Implemented:**
-1. Capture happens two ways now: the calling agent reports a noteworthy procedure directly via `record_observation` (or `myelin observe`), **or** a `SessionEnd` hook automatically stages candidates from the session that just ended (see the ingestion sub-pipeline below). Either way, an agent still makes the final call on whether something becomes a real observation — nothing auto-promotes straight from a transcript.
+1. Capture happens two ways now: the calling agent reports a noteworthy procedure directly via `record_observation` (or `myelin observe`), **or** a `SessionEnd` hook automatically stages candidates from the session that just ended (see the ingestion sub-pipeline below). Either way, an agent still makes the final call on whether something becomes a real observation — nothing auto-promotes straight from a transcript. `record_observation` is for domain-specific procedures worth remembering across sessions - a non-obvious fix, a team/org-specific convention, a workaround - **not** routine tool use.
 2. Matching against existing candidates: token-overlap (Jaccard) similarity. Threshold tunable via `[promotion]` in `config.toml` (`reps = 3`, `similarity_threshold = 0.4` by default — guesses, not measured values). An embeddings-based cosine-similarity upgrade was built and later decommissioned (see §7) before any real evidence Jaccard needed the help.
 3. Promotion, either path: reps threshold crossed, or `high_stakes: true` fast-tracks off a single observation.
 4. On promotion: a real `SKILL.md` is drafted from the accumulated observation summaries and written to `~/.claude/skills/<slug>/`, live immediately.
 5. After a skill is in use, `record_skill_feedback` (or `myelin feedback`) reports back on it: a `correction` appends the fix directly into the live `SKILL.md` (the file itself gets better over time) and a `confirmation` just logs, building a visible confidence count in `list_skills` without touching the file.
-6. `mark_skill_used` (or `myelin mark-used`) records that a skill was actually invoked, independent of feedback. `list_skills` flags a skill `stale` once `[atrophy] stale_after_secs` (default 30 days) has passed since its last use (or since promotion, if it's never been used) — informational only; nothing acts on it automatically.
-7. `archive_skill` (or `myelin archive-skill`) moves a skill's file out of the live skills directory into `.myelin-archived/` and marks it `archived` — always an explicit call an agent or the user makes after looking at the `stale` flag, never triggered by the flag itself. `restore_skill` reverses it exactly.
+6. `mark_skill_used` (or `myelin mark-used`) records that a skill was actually invoked, independent of feedback. `list_skills` flags a skill `stale` once `[atrophy] stale_after_secs` (default 30 days) has passed since its last use (or since promotion, if it's never been used) — informational for you/the agent; the one thing that *does* act on this signal automatically is the pruning cap below, using the same last-used timestamp, not the `stale` flag itself.
+7. `archive_skill` (or `myelin archive-skill`) moves a skill's file out of the live skills directory into `.myelin-archived/` and marks it `archived` — an explicit call an agent or the user makes after looking at the `stale` flag. `restore_skill` reverses it exactly. `[pruning] max_active_skills` (default 25) is the one *automatic* path to the same place: once promoting a skill would push the live count over the cap, the least-recently-used active skill(s) get auto-archived through this same mechanism — never blocking the promotion itself, and never evicting the skill that was just promoted.
+8. `list_warmup_queue` and `list_pending_review` both accept an optional `limit` (default 50), and the MCP layer clamps any caller-supplied value at 200 regardless - unbounded queue growth shouldn't turn into an unbounded response.
 8. `render_skill_graph` (or `myelin graph <id>`) renders one skill's bounded neighborhood — its candidate, the observations that backed it, its corrections/confirmations — as a PNG via Graphviz, using the original design ontology's edge names (`EVIDENCE_FOR`, `HARDENED_INTO`, `CORRECTS`/`REINFORCES`). Falls back to returning the raw DOT source if `dot` isn't installed (a Recommends, not a hard dependency).
 
 **Ingestion sub-pipeline (implemented):**
@@ -97,7 +98,8 @@ crates/
   myelin-core/   # shared lib: Config, Paths, Error
   myelin-index/  # SQLite store, similarity matching, promotion, SKILL.md drafting,
                  # redact.rs / transcript.rs / staging.rs (the ingestion sub-pipeline)
-  myelind/       # daemon: `mcp` (stdio JSON-RPC, 8 tools) and `serve` (control socket) subcommands
+  myelind/       # daemon: `mcp` (stdio JSON-RPC, 11 tools - 7 advertised by default, see §9's
+                 #   [tools] config) and `serve` (control socket) subcommands
   myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback|mark-used|
                  #   ingest-session|pending-review|dismiss-review`
 packaging/systemd/myelin.service
@@ -163,7 +165,24 @@ similarity_threshold = 0.4  # Jaccard token-overlap threshold, 0.0-1.0
 
 [atrophy]
 stale_after_secs = 2592000  # 30 days; flags a skill `stale` in list_skills, doesn't act on it
+
+[pruning]
+max_active_skills = 25  # soft cap on live skills; oldest-by-use auto-archived at promotion
+                         # time (never blocks a promotion); <= 0 disables auto-eviction
+
+[tools]
+preset = "standard"   # "minimal" (list_skills, mark_skill_used - 2) | "standard" (default,
+                       # 7 - adds record_observation/record_skill_feedback/list_warmup_queue/
+                       # list_pending_review/dismiss_pending_review) | "full" (all 11, adds
+                       # promote_skill/archive_skill/restore_skill/render_skill_graph)
+# enabled = ["list_skills", "mark_skill_used"]   # optional explicit list, overrides preset
 ```
+
+The default `standard` preset advertises 7 of the 11 tools over `tools/list` (curation tools -
+`promote_skill`/`archive_skill`/`restore_skill`/`render_skill_graph` - need `preset = "full"`
+or an explicit `enabled` entry) - this cuts the fixed per-session tool-schema token cost for
+sessions that aren't actively curating skills. `tools/call` itself isn't gated by this - it's
+purely about what gets advertised.
 
 **Packaging:** a `.deb` bundling both binaries plus the systemd unit.
 

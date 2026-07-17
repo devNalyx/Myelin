@@ -12,14 +12,20 @@ pub const DEFAULT_PROMOTION_REPS: i64 = 3;
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.4;
 /// 30 days.
 pub const DEFAULT_STALE_AFTER_SECS: i64 = 30 * 24 * 3600;
+pub const DEFAULT_MAX_ACTIVE_SKILLS: i64 = 25;
 
 pub struct StoreConfig {
     pub promotion_reps: i64,
     pub similarity_threshold: f64,
     /// A skill with no activity (never invoked, or not invoked) for this
-    /// long is flagged `stale` in `list_skills` — informational only, not
-    /// automatically deleted or unregistered.
+    /// long is flagged `stale` in `list_skills` — informational for
+    /// humans/agents (never blocks anything you do); the auto-eviction cap
+    /// below uses the same underlying signal internally.
     pub stale_after_secs: i64,
+    /// Soft cap on live (`status = 'active'`) skills, enforced at promotion
+    /// time by auto-archiving the least-recently-used active skill(s).
+    /// `<= 0` disables auto-eviction entirely.
+    pub max_active_skills: i64,
 }
 
 // Deliberately not `#[derive(Default)]`: i64/f64's own defaults are 0 and
@@ -32,6 +38,7 @@ impl Default for StoreConfig {
             promotion_reps: DEFAULT_PROMOTION_REPS,
             similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
             stale_after_secs: DEFAULT_STALE_AFTER_SECS,
+            max_active_skills: DEFAULT_MAX_ACTIVE_SKILLS,
         }
     }
 }
@@ -95,6 +102,7 @@ pub struct Store {
     promotion_reps: i64,
     similarity_threshold: f64,
     stale_after_secs: i64,
+    max_active_skills: i64,
 }
 
 pub struct NewObservation {
@@ -111,6 +119,21 @@ pub struct RecordResult {
     pub rep_count: i64,
     pub promoted: bool,
     pub skill_path: Option<String>,
+    /// Skills auto-archived to stay under `max_active_skills`, if this
+    /// promotion pushed the active count over the cap. Empty otherwise.
+    pub evicted_skills: Vec<EvictedSkill>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvictedSkill {
+    pub skill_id: i64,
+    pub slug: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PromoteOutcome {
+    pub path: String,
+    pub evicted: Vec<EvictedSkill>,
 }
 
 #[derive(Debug, Serialize)]
@@ -250,6 +273,7 @@ impl Store {
             promotion_reps: config.promotion_reps,
             similarity_threshold: config.similarity_threshold,
             stale_after_secs: config.stale_after_secs,
+            max_active_skills: config.max_active_skills,
         })
     }
 
@@ -328,6 +352,7 @@ impl Store {
 
         let mut promoted = false;
         let mut skill_path = None;
+        let mut evicted_skills = Vec::new();
 
         if status == "warming" && (input.high_stakes || rep_count >= self.promotion_reps) {
             let reason = if input.high_stakes {
@@ -335,7 +360,9 @@ impl Store {
             } else {
                 "reps"
             };
-            skill_path = Some(self.promote_internal(candidate_id, reason, skills_dir)?);
+            let outcome = self.promote_internal(candidate_id, reason, skills_dir)?;
+            skill_path = Some(outcome.path);
+            evicted_skills = outcome.evicted;
             promoted = true;
         }
 
@@ -344,6 +371,7 @@ impl Store {
             rep_count,
             promoted,
             skill_path,
+            evicted_skills,
         })
     }
 
@@ -353,7 +381,7 @@ impl Store {
         &self,
         candidate_id: i64,
         skills_dir: &Path,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<PromoteOutcome> {
         let status: String = self
             .conn
             .query_row(
@@ -373,7 +401,7 @@ impl Store {
         candidate_id: i64,
         reason: &str,
         skills_dir: &Path,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<PromoteOutcome> {
         let title: String = self.conn.query_row(
             "SELECT title FROM skill_candidates WHERE id = ?1",
             params![candidate_id],
@@ -408,20 +436,72 @@ impl Store {
                 now
             ],
         )?;
+        let new_skill_id = self.conn.last_insert_rowid();
         self.conn.execute(
             "UPDATE skill_candidates SET status = 'promoted' WHERE id = ?1",
             params![candidate_id],
         )?;
 
-        Ok(path_str)
+        // Promotion is fully committed at this point - a pruning failure
+        // below must never look like a failed promotion. Best-effort:
+        // skip (not error) any skill that fails to archive.
+        let mut evicted = Vec::new();
+        if self.max_active_skills > 0 {
+            let active_count = self.active_skill_count()?;
+            let over = active_count - self.max_active_skills;
+            if over > 0 {
+                for (skill_id, slug) in self.oldest_active_skills(new_skill_id, over)? {
+                    if self.archive_skill(skill_id, skills_dir).is_ok() {
+                        evicted.push(EvictedSkill { skill_id, slug });
+                    }
+                }
+            }
+        }
+
+        Ok(PromoteOutcome {
+            path: path_str,
+            evicted,
+        })
     }
 
-    pub fn list_candidates(&self) -> anyhow::Result<Vec<CandidateView>> {
+    fn active_skill_count(&self) -> anyhow::Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM skills WHERE status = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    /// The `n` oldest-by-reference-timestamp active skills, excluding
+    /// `exclude_id` (the skill just promoted this call - never evict what
+    /// was just promoted). Same reference timestamp `list_skills`'s `stale`
+    /// flag uses: `last_invoked_at`, falling back to `created_at`.
+    fn oldest_active_skills(&self, exclude_id: i64, n: i64) -> anyhow::Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug FROM skills
+             WHERE status = 'active' AND id != ?1
+             ORDER BY COALESCE(last_invoked_at, created_at) ASC, id ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![exclude_id, n], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Candidates still `warming` (not yet promoted), most-recently-seen
+    /// first, capped at `limit` - both current callers only ever want the
+    /// warming subset, so the filter lives in SQL rather than being
+    /// re-applied by every caller.
+    pub fn list_candidates(&self, limit: i64) -> anyhow::Result<Vec<CandidateView>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, rep_count, status, first_seen, last_seen
-             FROM skill_candidates ORDER BY last_seen DESC",
+             FROM skill_candidates WHERE status = 'warming'
+             ORDER BY last_seen DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![limit], |row| {
             Ok(CandidateView {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -672,12 +752,12 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn list_pending_review(&self) -> anyhow::Result<Vec<PendingReviewView>> {
+    pub fn list_pending_review(&self, limit: i64) -> anyhow::Result<Vec<PendingReviewView>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at, session_id, project, heuristic_reason, excerpt
-             FROM pending_reviews WHERE status = 'pending' ORDER BY created_at DESC",
+             FROM pending_reviews WHERE status = 'pending' ORDER BY created_at DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![limit], |row| {
             Ok(PendingReviewView {
                 id: row.get(0)?,
                 created_at: row.get(1)?,
@@ -737,6 +817,244 @@ mod tests {
             context_signal: None,
             high_stakes: false,
         }
+    }
+
+    fn high_stakes_obs(title: &str, summary: &str) -> NewObservation {
+        let mut input = obs(title, summary);
+        input.high_stakes = true;
+        input
+    }
+
+    #[test]
+    fn promoting_past_the_cap_evicts_the_oldest_active_skill() {
+        let (db_path, skills_dir) = scratch_dirs("evict-oldest");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                max_active_skills: 1,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+
+        store
+            .record_observation(
+                high_stakes_obs("rotate leaked api key", "revoke and reissue"),
+                &skills_dir,
+            )
+            .unwrap();
+        let result_b = store
+            .record_observation(
+                high_stakes_obs("fix flaky ci test", "add a retry with backoff"),
+                &skills_dir,
+            )
+            .unwrap();
+
+        let skills = store.list_skills().unwrap();
+        let a = skills
+            .iter()
+            .find(|s| s.name == "rotate leaked api key")
+            .unwrap();
+        let b = skills
+            .iter()
+            .find(|s| s.name == "fix flaky ci test")
+            .unwrap();
+        assert_eq!(a.status, "archived");
+        assert_eq!(b.status, "active");
+        assert_eq!(result_b.evicted_skills.len(), 1);
+        assert_eq!(result_b.evicted_skills[0].skill_id, a.id);
+    }
+
+    #[test]
+    fn eviction_picks_the_least_recently_used_not_the_newest() {
+        let (db_path, skills_dir) = scratch_dirs("evict-lru");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                max_active_skills: 2,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+
+        store
+            .record_observation(
+                high_stakes_obs("rotate leaked api key", "revoke and reissue"),
+                &skills_dir,
+            )
+            .unwrap();
+        store
+            .record_observation(
+                high_stakes_obs("fix flaky ci test", "add a retry with backoff"),
+                &skills_dir,
+            )
+            .unwrap();
+
+        let a_id = store
+            .list_skills()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == "rotate leaked api key")
+            .unwrap()
+            .id;
+        // Mark A used so its reference timestamp is newer than B's -
+        // B is now the genuinely least-recently-used of the two.
+        store.mark_skill_used(a_id).unwrap();
+
+        let result_c = store
+            .record_observation(
+                high_stakes_obs("migrate database schema", "run the migration script"),
+                &skills_dir,
+            )
+            .unwrap();
+
+        let skills = store.list_skills().unwrap();
+        let a = skills
+            .iter()
+            .find(|s| s.name == "rotate leaked api key")
+            .unwrap();
+        let b = skills
+            .iter()
+            .find(|s| s.name == "fix flaky ci test")
+            .unwrap();
+        let c = skills
+            .iter()
+            .find(|s| s.name == "migrate database schema")
+            .unwrap();
+        assert_eq!(a.status, "active", "just-used skill should not be evicted");
+        assert_eq!(
+            b.status, "archived",
+            "least-recently-used skill should be evicted"
+        );
+        assert_eq!(
+            c.status, "active",
+            "just-promoted skill should not evict itself"
+        );
+        assert_eq!(result_c.evicted_skills[0].skill_id, b.id);
+    }
+
+    #[test]
+    fn cap_zero_disables_auto_eviction() {
+        let (db_path, skills_dir) = scratch_dirs("evict-disabled");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                max_active_skills: 0,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+
+        for (title, summary) in [
+            ("rotate leaked api key", "revoke and reissue"),
+            ("fix flaky ci test", "add a retry with backoff"),
+            ("migrate database schema", "run the migration script"),
+        ] {
+            store
+                .record_observation(high_stakes_obs(title, summary), &skills_dir)
+                .unwrap();
+        }
+
+        let skills = store.list_skills().unwrap();
+        assert_eq!(skills.len(), 3);
+        assert!(skills.iter().all(|s| s.status == "active"));
+    }
+
+    #[test]
+    fn default_config_does_not_evict_at_low_skill_counts() {
+        let (store, skills_dir) = open_test_store("evict-default-low-count");
+        store
+            .record_observation(
+                high_stakes_obs("rotate leaked api key", "revoke and reissue"),
+                &skills_dir,
+            )
+            .unwrap();
+        store
+            .record_observation(
+                high_stakes_obs("fix flaky ci test", "add a retry with backoff"),
+                &skills_dir,
+            )
+            .unwrap();
+
+        let skills = store.list_skills().unwrap();
+        assert_eq!(skills.len(), 2);
+        assert!(skills.iter().all(|s| s.status == "active"));
+    }
+
+    #[test]
+    fn manual_promote_also_respects_the_cap() {
+        let (db_path, skills_dir) = scratch_dirs("evict-manual-promote");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                promotion_reps: 100, // keep record_observation from auto-promoting
+                max_active_skills: 1,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+
+        let candidate_a = store
+            .record_observation(
+                obs("rotate leaked api key", "revoke and reissue"),
+                &skills_dir,
+            )
+            .unwrap()
+            .candidate_id;
+        let candidate_b = store
+            .record_observation(
+                obs("fix flaky ci test", "add a retry with backoff"),
+                &skills_dir,
+            )
+            .unwrap()
+            .candidate_id;
+
+        store.promote_candidate(candidate_a, &skills_dir).unwrap();
+        let outcome_b = store.promote_candidate(candidate_b, &skills_dir).unwrap();
+
+        assert_eq!(outcome_b.evicted.len(), 1);
+        let skills = store.list_skills().unwrap();
+        assert_eq!(
+            skills.iter().filter(|s| s.status == "active").count(),
+            1,
+            "manual promotion path must enforce the cap too, not just the automatic one"
+        );
+    }
+
+    #[test]
+    fn auto_evicted_skill_file_actually_moves_to_the_archived_dir() {
+        let (db_path, skills_dir) = scratch_dirs("evict-file-move");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                max_active_skills: 1,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+
+        store
+            .record_observation(
+                high_stakes_obs("rotate leaked api key", "revoke and reissue"),
+                &skills_dir,
+            )
+            .unwrap();
+        store
+            .record_observation(
+                high_stakes_obs("fix flaky ci test", "add a retry with backoff"),
+                &skills_dir,
+            )
+            .unwrap();
+
+        let a = store
+            .list_skills()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == "rotate leaked api key")
+            .unwrap();
+        assert_eq!(a.status, "archived");
+        assert!(a.path.contains(".myelin-archived"));
+        assert!(std::path::Path::new(&a.path).exists());
     }
 
     #[test]
@@ -1004,13 +1322,43 @@ mod tests {
             )
             .unwrap();
 
-        let queue = store.list_pending_review().unwrap();
+        let queue = store.list_pending_review(50).unwrap();
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0].id, id);
         assert_eq!(queue[0].heuristic_reason, "multi-step-sequence");
 
         store.dismiss_pending_review(id).unwrap();
-        assert!(store.list_pending_review().unwrap().is_empty());
+        assert!(store.list_pending_review(50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_pending_review_respects_the_limit() {
+        let (store, _skills_dir) = open_test_store("pending-review-limit");
+        for i in 0..3 {
+            store
+                .stage_pending_review("sess-1", None, "reason", &format!("excerpt {i}"))
+                .unwrap();
+        }
+        assert_eq!(store.list_pending_review(200).unwrap().len(), 3);
+        assert_eq!(store.list_pending_review(2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn list_candidates_only_returns_warming_and_respects_the_limit() {
+        let (store, skills_dir) = open_test_store("candidates-limit");
+        // Three dissimilar single observations stay "warming" (default
+        // promotion_reps is 3, none high_stakes).
+        for (title, summary) in [
+            ("rotate leaked api key", "revoke and reissue"),
+            ("fix flaky ci test", "add a retry with backoff"),
+            ("migrate database schema", "run the migration script"),
+        ] {
+            store
+                .record_observation(obs(title, summary), &skills_dir)
+                .unwrap();
+        }
+        assert_eq!(store.list_candidates(200).unwrap().len(), 3);
+        assert_eq!(store.list_candidates(2).unwrap().len(), 2);
     }
 
     #[test]

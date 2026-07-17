@@ -62,7 +62,11 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "myelin", "version": env!("CARGO_PKG_VERSION") }
         })),
-        "tools/list" => Ok(json!({ "tools": crate::tools::tool_definitions() })),
+        "tools/list" => {
+            let config = myelin_core::Config::load(&myelin_core::Paths::resolve().config_file())
+                .unwrap_or_default();
+            Ok(json!({ "tools": crate::tools::enabled_tool_definitions(&config) }))
+        }
         "tools/call" => crate::tools::call(params).map_err(|err| RpcError {
             code: -32000,
             message: err.to_string(),

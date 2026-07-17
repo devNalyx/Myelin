@@ -1,9 +1,11 @@
 use directories::{BaseDirs, ProjectDirs};
 use std::path::PathBuf;
 
-/// Resolved filesystem locations. Config lives at `~/.config/myelin`, data at
-/// `~/.local/share/myelin` unless overridden via `MYELIN_DATA_DIR` — same
-/// override convention NexusContext used for `NEXUS_CACHE_DIR`.
+/// Resolved filesystem locations. Config lives at `~/.config/myelin`
+/// (overridable via `MYELIN_CONFIG_DIR`, e.g. for isolating tests from a
+/// real `config.toml`), data at `~/.local/share/myelin` unless overridden
+/// via `MYELIN_DATA_DIR` — same override convention NexusContext used for
+/// `NEXUS_CACHE_DIR`.
 pub struct Paths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -17,7 +19,9 @@ impl Paths {
         let dirs = ProjectDirs::from("", "", "myelin")
             .expect("could not determine a home directory for the current user");
 
-        let config_dir = dirs.config_dir().to_path_buf();
+        let config_dir = std::env::var_os("MYELIN_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dirs.config_dir().to_path_buf());
         let data_dir = std::env::var_os("MYELIN_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| dirs.data_dir().to_path_buf());

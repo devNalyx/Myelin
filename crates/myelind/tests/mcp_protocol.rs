@@ -16,15 +16,25 @@ struct McpSession {
 
 impl McpSession {
     fn start(data_dir: &std::path::Path, skills_dir: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_myelind"))
-            .arg("mcp")
+        Self::start_with_config(data_dir, skills_dir, None)
+    }
+
+    fn start_with_config(
+        data_dir: &std::path::Path,
+        skills_dir: &std::path::Path,
+        config_dir: Option<&std::path::Path>,
+    ) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_myelind"));
+        cmd.arg("mcp")
             .env("MYELIN_DATA_DIR", data_dir)
             .env("MYELIN_SKILLS_DIR", skills_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn myelind mcp");
+            .stderr(Stdio::null());
+        if let Some(config_dir) = config_dir {
+            cmd.env("MYELIN_CONFIG_DIR", config_dir);
+        }
+        let mut child = cmd.spawn().expect("failed to spawn myelind mcp");
 
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
@@ -73,6 +83,20 @@ fn scratch_dirs(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (root.join("data"), root.join("skills"))
 }
 
+const ALL_ELEVEN_TOOLS: &[&str] = &[
+    "record_observation",
+    "list_warmup_queue",
+    "list_skills",
+    "promote_skill",
+    "record_skill_feedback",
+    "mark_skill_used",
+    "list_pending_review",
+    "dismiss_pending_review",
+    "archive_skill",
+    "restore_skill",
+    "render_skill_graph",
+];
+
 #[test]
 fn initialize_and_tools_list_match_the_real_dispatch() {
     let (data_dir, skills_dir) = scratch_dirs("init-list");
@@ -81,23 +105,63 @@ fn initialize_and_tools_list_match_the_real_dispatch() {
     let init = session.call(1, "initialize", json!({}));
     assert_eq!(init["result"]["serverInfo"]["name"], "myelin");
 
+    // No [tools] config present -> default "standard" preset (7 of 11).
     let list = session.call(2, "tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names.len(),
+        7,
+        "default preset should be the 7-tool 'standard' set"
+    );
     for expected in [
         "record_observation",
-        "list_warmup_queue",
         "list_skills",
-        "promote_skill",
+        "list_warmup_queue",
         "record_skill_feedback",
         "mark_skill_used",
         "list_pending_review",
         "dismiss_pending_review",
+    ] {
+        assert!(names.contains(&expected), "missing tool: {expected}");
+    }
+    for curation_only in [
+        "promote_skill",
         "archive_skill",
         "restore_skill",
         "render_skill_graph",
     ] {
-        assert!(names.contains(&expected), "missing tool: {expected}");
+        assert!(
+            !names.contains(&curation_only),
+            "{curation_only} should not be in the default 'standard' preset"
+        );
+    }
+}
+
+#[test]
+fn tools_list_with_full_preset_config_returns_all_eleven() {
+    let (data_dir, skills_dir) = scratch_dirs("init-list-full");
+    let config_dir = std::env::temp_dir().join(format!(
+        "myelind-it-config-full-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[tools]\npreset = \"full\"\n",
+    )
+    .unwrap();
+
+    let mut session = McpSession::start_with_config(&data_dir, &skills_dir, Some(&config_dir));
+    let list = session.call(1, "tools/list", json!({}));
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names.len(), 11);
+    for expected in ALL_ELEVEN_TOOLS {
+        assert!(names.contains(expected), "missing tool: {expected}");
     }
 }
 
