@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cheap fail-fast guard before spending CI minutes on platform builds:
+  # catches "tagged before bumping the version" - a tag that doesn't match
+  # workspace.package.version in Cargo.toml is almost always a mistake, not
+  # an intentional re-release of the same version under a new tag.
+  check-version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          cargo_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "Tag v$tag_version does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+
+  # Full parity - daemon + CLI, .deb (systemd user unit included), and a
+  # plain tarball for distros using neither package format. No RPM yet -
+  # unlike NexusContext, no cargo-generate-rpm config has ever been
+  # prepared/verified for this project, so it's not attempted blind here.
+  linux-x86_64:
+    needs: check-version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release --locked
+
+      - name: Build .deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb -p myelind --no-build
+
+      - name: Build plain tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/myelin-linux-x86_64.tar.gz -C target/release myelind myelin
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/debian/*.deb artifacts/
+          cp dist/*.tar.gz artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: artifacts/*
+
+  # No GUI crate and no C-source grammar crates in this workspace (unlike
+  # NexusContext), so there's nothing macOS-incompatible to exclude -
+  # ci.yml's existing test-macos job already builds/tests the whole
+  # workspace on macos-14 successfully. Apple Silicon only, same runner-
+  # availability rationale NexusContext's release.yml documents for
+  # skipping a separate Intel (macos-13) job.
+  macos-aarch64:
+    needs: check-version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release --locked
+      - name: Build tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/myelin-macos-aarch64.tar.gz -C target/release myelind myelin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: dist/*.tar.gz
+
+  # Fan-in: each platform job uploads its own artifacts independently, and
+  # only this one job actually talks to the GitHub Release - multiple jobs
+  # each calling `gh release create` against the same tag would race each
+  # other creating/updating the same release.
+  publish:
+    needs: [linux-x86_64, macos-aarch64]
+    runs-on: ubuntu-24.04
+    # The default GITHUB_TOKEN is read-only for repo contents unless a job
+    # explicitly asks for write access - without this, creating the release
+    # itself fails with "403 Resource not accessible by integration."
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            **Linux (x86_64)**: full parity - `myelind` (daemon: MCP server + control API) and `myelin` (CLI), systemd user unit included. Choose the `.deb` or the plain tarball depending on your distro. `graphviz` is a Recommends, not a hard dependency - only needed for `render_skill_graph`'s PNG output; falls back to raw DOT source without it.
+
+            **macOS (Apple Silicon)**: same `myelind`/`myelin` binaries, plain tarball only (no native packaging yet). Unsigned binaries will need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since these aren't notarized.
+
+            **Windows**: not yet published.
