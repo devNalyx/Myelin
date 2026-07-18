@@ -1,3 +1,5 @@
+mod install;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use myelin_index::{NewObservation, Store, StoreConfig};
@@ -16,6 +18,10 @@ struct Cli {
 enum Command {
     /// Ping the running myelind daemon over its control socket.
     Status,
+    /// Auto-detect MCP-capable agents on this machine, register `myelind
+    /// mcp` using this machine's actual binary paths, and wire up the
+    /// SessionEnd ingestion hook in ~/.claude/settings.json.
+    Install,
     /// Record an observation directly (bypasses the daemon — for debugging
     /// the same store the MCP `record_observation` tool writes to).
     Observe {
@@ -74,6 +80,7 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Status => status(),
+        Command::Install => install::run(),
         Command::Observe {
             title,
             summary,

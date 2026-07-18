@@ -67,4 +67,17 @@ impl Paths {
             .join(".claude")
             .join("skills")
     }
+
+    /// `~/.claude/settings.json` - Claude Code's own shared config, not
+    /// Myelin's. Overridable via `MYELIN_CLAUDE_SETTINGS_FILE` for testing.
+    pub fn claude_settings_file(&self) -> PathBuf {
+        if let Some(path) = std::env::var_os("MYELIN_CLAUDE_SETTINGS_FILE") {
+            return PathBuf::from(path);
+        }
+        BaseDirs::new()
+            .expect("could not determine a home directory for the current user")
+            .home_dir()
+            .join(".claude")
+            .join("settings.json")
+    }
 }

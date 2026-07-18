@@ -4,7 +4,7 @@
 
 Myelin — the layer that turns repeated practice into instinct, the same way the biological process it's named after insulates a repeatedly-used neural pathway until it's faster and eventually automatic.
 
-**Status:** MVP, registered as a live user-scoped MCP server (`claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file → usage/atrophy tracking — works end-to-end, verified over the actual MCP stdio protocol. Automatic session ingestion also exists now: a `SessionEnd` hook redacts and heuristically stages candidates from each session's transcript into a review queue — no daemon-side LLM judgment, a later live agent session still decides what's actually worth an observation. Candidate matching is plain token-overlap (Jaccard) only — an embeddings-based upgrade was built, then deliberately decommissioned before any real evidence it was needed (see §7). See §4/§5 for what's real vs. still sketch.
+**Status:** MVP, registered as a live user-scoped MCP server (`myelin install`, or by hand via `claude mcp add myelin`). The full loop — observation → warmup queue → promotion → real `SKILL.md` → correction/confirmation feedback mutating that same file → usage/atrophy tracking — works end-to-end, verified over the actual MCP stdio protocol. Automatic session ingestion also exists now: a `SessionEnd` hook redacts and heuristically stages candidates from each session's transcript into a review queue — no daemon-side LLM judgment, a later live agent session still decides what's actually worth an observation. Candidate matching is plain token-overlap (Jaccard) only — an embeddings-based upgrade was built, then deliberately decommissioned before any real evidence it was needed (see §7). See §4/§5 for what's real vs. still sketch.
 
 ---
 
@@ -100,7 +100,7 @@ crates/
                  # redact.rs / transcript.rs / staging.rs (the ingestion sub-pipeline)
   myelind/       # daemon: `mcp` (stdio JSON-RPC, 11 tools - 7 advertised by default, see §9's
                  #   [tools] config) and `serve` (control socket) subcommands
-  myelin-cli/    # `myelin status|observe|queue|skills|promote|feedback|mark-used|
+  myelin-cli/    # `myelin status|install|observe|queue|skills|promote|feedback|mark-used|
                  #   ingest-session|pending-review|dismiss-review`
 packaging/systemd/myelin.service
 ```
@@ -128,11 +128,11 @@ Or directly via the CLI, against the same SQLite store:
 
 Three similarly-worded `observe` calls (or one with `--high-stakes`) will drop a real `SKILL.md` into `~/.claude/skills/<slug>/` — override the location with `MYELIN_SKILLS_DIR` for testing.
 
-Registered in this environment via `claude mcp add myelin -s user -- <path>/target/release/myelind mcp` (pointed at the release build, not `target/debug` — `cargo clean` or moving the repo will break it either way, since it's not installed anywhere yet) — live in every session from the next `claude`/`claude --resume` onward.
+`myelin install` auto-detects Claude Code (and Claude Desktop, if present) and registers `myelind mcp` for each, using this machine's actual resolved binary paths rather than a bare command name — works the same from a `cargo build`/`--release` checkout or a `.deb` install, and re-running it is safe (idempotent; `claude mcp add` itself reports "already registered" rather than duplicating). Prints a generic `mcpServers` snippet for anything else. Under the hood, that's equivalent to running `claude mcp add myelin -s user -- <path>/myelind mcp` by hand — live in every session from the next `claude`/`claude --resume` onward.
 
 The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to this loop — it's the separate GUI/status-check channel from the original scaffold, not yet wired to anything new.
 
-**Session ingestion**, driven by a Claude Code `SessionEnd` hook (`~/.claude/settings.json`, user scope):
+**Session ingestion**, driven by a Claude Code `SessionEnd` hook (`~/.claude/settings.json`, user scope). `myelin install` writes this automatically — merges a new entry into `hooks.SessionEnd` without touching any other hook or top-level key already there, and is idempotent (a marker check recognizes an already-configured entry, even across a dev→release→installed path change, instead of appending a duplicate). This is what it writes:
 
 ```json
 {
@@ -141,7 +141,7 @@ The daemon's control socket (`myelind serve` / `myelin status`) is unrelated to 
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "<path>/target/release/myelin ingest-session" }
+          { "type": "command", "command": "<path>/myelin ingest-session" }
         ]
       }
     ]
